@@ -48,7 +48,9 @@
     </section>
     <section class="panel-actions">
       <button class="btn" id="fitAll">Показать все объекты</button>
-      <button class="btn" id="downloadBtn" title="HTML-страница с объектами, которые сейчас на экране с учётом фильтров; поиск и фильтры в ней работают без сервера">Скачать HTML</button>
+      <button class="btn" id="importCsvBtn" hidden title="Загрузить объекты из CSV: колонки как в шаблоне импорта (Тип, Название, Широта, Долгота…)">Импорт CSV</button>
+      <input type="file" id="csvInput" accept=".csv,.txt,text/csv" hidden>
+      <button class="btn" id="downloadBtn" title="HTML-страница с объектами, которые сейчас на экране с учётом фильтров (можно и без объектов); поиск, фильтры и импорт CSV в ней работают без сервера">Скачать HTML</button>
       <p class="muted small" id="stats"></p>
     </section>
   </aside>
@@ -60,6 +62,7 @@
     <div id="cardBody"></div>
   </aside>
 
+  <div class="drop-overlay" id="dropOverlay" hidden><div>Отпустите CSV-файл, чтобы загрузить объекты</div></div>
   <div class="loading" id="loading">Загрузка объектов…</div>
 
   <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>

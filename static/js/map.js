@@ -1,4 +1,5 @@
-import { can, debounce, esc, fail, fmtDate, fmtNum, logout, toast } from './api.js';
+import { can, debounce, esc, fail, fmtDate, fmtNum, logout, modal, toast } from './api.js';
+import { csvToObjects, parseCsv, readCsvFile } from './csv.js';
 import { createProvider } from './data.js';
 import { downloadSnapshot } from './download.js';
 import { markerCanvas, markerDataUrl } from './icons.js';
@@ -100,7 +101,7 @@ function renderLegend() {
       <label class="check legend-item">
         <input type="checkbox" data-type="${t.id}" ${state.visible.has(t.id) ? 'checked' : ''}>
         <img class="legend-icon" data-icon="${t.id}" alt="">
-        <span class="legend-name">${esc(t.name)}${t.has_radius ? ` <span class="muted small">· ${fmtNum(t.default_radius_m)} м</span>` : ''}</span>
+        <span class="legend-name">${esc(t.name)}${t.has_radius && t.default_radius_m ? ` <span class="muted small">· ${fmtNum(t.default_radius_m)} м</span>` : ''}</span>
         <span class="legend-count">${fmtNum(counts.get(t.id) || 0)}</span>
       </label>
     </li>`).join('');
@@ -111,7 +112,9 @@ function renderLegend() {
     });
   }
   const shown = state.filtered.length;
-  $('stats').textContent = `На карте ${fmtNum(shown)} из ${fmtNum(state.all.features.length)} объектов`;
+  $('stats').textContent = data.mode === 'snapshot' && !state.all.features.length
+    ? 'Объектов нет — нажмите «Импорт CSV» или перетащите CSV-файл в окно'
+    : `На карте ${fmtNum(shown)} из ${fmtNum(state.all.features.length)} объектов`;
 }
 
 // ---------------------------------------------------------------- зоны
@@ -405,6 +408,152 @@ function resetFilters() {
   applyFilter();
 }
 
+// ---------------------------------------------------------------- типы и источник объектов
+
+function setTypes(types) {
+  state.types = types;
+  state.typeById = new Map(types.map((t) => [t.id, t]));
+}
+
+async function addTypeImages() {
+  await Promise.all(state.types.map(async (t) => {
+    if (map.hasImage(`type-${t.id}`)) return;
+    const canvas = await markerCanvas(t);
+    const ctx = canvas.getContext('2d');
+    map.addImage(`type-${t.id}`, ctx.getImageData(0, 0, canvas.width, canvas.height), { pixelRatio: 2 });
+  }));
+}
+
+// Счётчики по типам для колец кластеров задаются при создании источника — при новых типах источник пересоздаётся.
+function setupObjectsSource() {
+  if (map.getLayer('points')) map.removeLayer('points');
+  if (map.getSource('objects')) map.removeSource('objects');
+  clearClusterMarkers();
+  const clusterProperties = {};
+  for (const t of state.types) clusterProperties[`t_${t.id}`] = ['+', ['case', ['==', ['get', 't'], t.id], 1, 0]];
+  map.addSource('objects', {
+    type: 'geojson',
+    data: EMPTY,
+    cluster: true,
+    clusterRadius: state.settings.cluster_radius,
+    clusterMaxZoom: state.settings.cluster_max_zoom,
+    clusterProperties,
+  });
+  map.addLayer({
+    id: 'points',
+    type: 'symbol',
+    source: 'objects',
+    filter: ['!', ['has', 'point_count']],
+    layout: {
+      'icon-image': ['concat', 'type-', ['to-string', ['get', 't']]],
+      'icon-anchor': 'bottom',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+  });
+}
+
+function renderSources(sources) {
+  const sel = $('sourceSelect');
+  sel.innerHTML = '<option value="">Все источники</option>'
+    + sources.map((s) => `<option value="${esc(s.source)}">${esc(s.source)} (${fmtNum(s.objects)})</option>`).join('');
+  sel.value = state.source;
+  if (sel.value !== state.source) state.source = '';
+}
+
+// ---------------------------------------------------------------- импорт CSV (скачанная страница)
+
+function askImportMode(fileName, count, existing) {
+  return new Promise((resolve) => {
+    const m = modal('Импорт CSV', `<p>В файле «${esc(fileName)}» объектов: <b>${fmtNum(count)}</b>.
+      Сейчас на карте ${fmtNum(existing)}. Что сделать?</p>
+      <p class="muted small">«Добавить» обновляет объекты с тем же ID и добавляет новые.</p>`, {
+      actions: [
+        { label: 'Отмена', onClick: () => resolve(null) },
+        { label: 'Добавить', onClick: () => resolve('add') },
+        { label: 'Заменить все', kind: 'primary', onClick: () => resolve('replace') },
+      ],
+    });
+    m.querySelector('[data-close]').addEventListener('click', () => resolve(null));
+  });
+}
+
+function showImportReport(fileName, result, unknownTypes) {
+  const { objects, errors } = result;
+  const list = errors.slice(0, 200).map((e) => `<li>Строка ${e.row}: ${esc(e.message)}</li>`).join('');
+  modal('Импорт завершён', `
+    <p>Из «${esc(fileName)}» загружено объектов: <b>${fmtNum(objects.length)}</b>.</p>
+    ${unknownTypes.length ? `<p>Типов нет в справочнике, показаны серым: ${unknownTypes.map((t) => `«${esc(t.name)}»`).join(', ')}.</p>` : ''}
+    ${errors.length ? `<p>Замечания (${fmtNum(errors.length)}):</p><ul class="import-errors">${list}</ul>
+      ${errors.length > 200 ? `<p class="muted small">Показаны первые 200.</p>` : ''}` : ''}`, {
+    actions: [{ label: 'Закрыть', kind: 'primary' }],
+  });
+}
+
+async function importCsv(file) {
+  if (!/\.(csv|txt)$/i.test(file.name)) {
+    toast('Нужен файл CSV', 'error');
+    return;
+  }
+  try {
+    const rows = parseCsv(await readCsvFile(file));
+    const result = csvToObjects(rows, data.rawTypes(), data.nextId(), file.name);
+    if (!result.objects.length) {
+      showImportReport(file.name, result, []);
+      return;
+    }
+    let mode = 'replace';
+    if (data.count()) {
+      mode = await askImportMode(file.name, result.objects.length, data.count());
+      if (!mode) return;
+    }
+    data.importObjects(result.objects, result.newTypes, mode === 'replace');
+    const knownIds = new Set(state.types.map((t) => t.id));
+    setTypes(await data.types());
+    const typesChanged = state.types.length !== knownIds.size || state.types.some((t) => !knownIds.has(t.id));
+    await addTypeImages();
+    if (typesChanged) setupObjectsSource();
+    state.visible = new Set(state.types.map((t) => t.id));
+    state.source = '';
+    state.attrs = state.attrNames.map(() => '');
+    renderSources(await data.sources());
+    await loadObjects();
+    await renderAttrFilters();
+    applyFilter();
+    fitAll();
+    $('snapshotInfo').textContent = `${$('snapshotInfo').textContent.split(' · ')[0]} · CSV: ${file.name}`;
+    const unknown = state.types.filter((t) => t.unknown && result.newTypes.some((n) => n.id === t.id));
+    if (result.errors.length || unknown.length) showImportReport(file.name, result, unknown);
+    else toast(`Загружено объектов: ${fmtNum(result.objects.length)}`, 'success');
+  } catch (e) {
+    toast(`Не удалось загрузить CSV: ${e.message}`, 'error', 8000);
+  }
+}
+
+function setupCsvImport() {
+  const input = $('csvInput');
+  $('importCsvBtn').hidden = false;
+  $('importCsvBtn').addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    if (input.files[0]) importCsv(input.files[0]);
+    input.value = '';
+  });
+  // Файл можно просто перетащить в окно.
+  let depth = 0;
+  const over = $('dropOverlay');
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  document.addEventListener('dragenter', (e) => { if (hasFiles(e)) { depth += 1; over.hidden = false; } });
+  document.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) over.hidden = true; });
+  document.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+  document.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth = 0;
+    over.hidden = true;
+    if (e.dataTransfer.files[0]) importCsv(e.dataTransfer.files[0]);
+  });
+}
+
 // ---------------------------------------------------------------- инициализация
 
 function fitAll() {
@@ -443,8 +592,7 @@ async function init() {
 
   const [settings, types, sources] = await Promise.all([data.settings(), data.types(), data.sources()]);
   state.settings = settings;
-  state.types = types;
-  state.typeById = new Map(types.map((t) => [t.id, t]));
+  setTypes(types);
   const fromHash = readHash();
   // В выгрузке видны все типы: в неё попали только объекты, видимые в момент скачивания.
   const defaultTypes = data.mode === 'snapshot' ? types : types.filter((t) => t.visible_default);
@@ -453,9 +601,7 @@ async function init() {
   state.zones = fromHash.zones ?? true;
   state.source = fromHash.source ?? '';
   $('zonesToggle').checked = state.zones;
-  $('sourceSelect').insertAdjacentHTML('beforeend',
-    sources.map((s) => `<option value="${esc(s.source)}">${esc(s.source)} (${fmtNum(s.objects)})</option>`).join(''));
-  $('sourceSelect').value = state.source;
+  renderSources(sources);
   state.attrNames = settings.filter_attributes || [];
   state.attrs = state.attrNames.map((name) => fromHash.attrs[name] ?? '');
   await renderAttrFilters();
@@ -487,14 +633,7 @@ async function init() {
 
   await Promise.all([new Promise((r) => map.on('load', r)), loadObjects()]);
 
-  await Promise.all(types.map(async (t) => {
-    const canvas = await markerCanvas(t);
-    const ctx = canvas.getContext('2d');
-    map.addImage(`type-${t.id}`, ctx.getImageData(0, 0, canvas.width, canvas.height), { pixelRatio: 2 });
-  }));
-
-  const clusterProperties = {};
-  for (const t of types) clusterProperties[`t_${t.id}`] = ['+', ['case', ['==', ['get', 't'], t.id], 1, 0]];
+  await addTypeImages();
 
   map.addSource('zones', { type: 'geojson', data: EMPTY });
   map.addLayer({
@@ -514,26 +653,7 @@ async function init() {
   });
   map.addSource('spider', { type: 'geojson', data: EMPTY });
   map.addLayer({ id: 'spider-legs', type: 'line', source: 'spider', paint: { 'line-color': '#555', 'line-width': 1.2, 'line-opacity': 0.7 } });
-  map.addSource('objects', {
-    type: 'geojson',
-    data: EMPTY,
-    cluster: true,
-    clusterRadius: settings.cluster_radius,
-    clusterMaxZoom: settings.cluster_max_zoom,
-    clusterProperties,
-  });
-  map.addLayer({
-    id: 'points',
-    type: 'symbol',
-    source: 'objects',
-    filter: ['!', ['has', 'point_count']],
-    layout: {
-      'icon-image': ['concat', 'type-', ['to-string', ['get', 't']]],
-      'icon-anchor': 'bottom',
-      'icon-allow-overlap': true,
-      'icon-ignore-placement': true,
-    },
-  });
+  setupObjectsSource();
 
   map.on('render', () => {
     if (map.getSource('objects') && map.isSourceLoaded('objects')) updateClusterMarkers();
@@ -581,7 +701,7 @@ async function init() {
     else state.visible.delete(id);
     applyFilter();
   });
-  $('allTypes').addEventListener('click', () => { state.visible = new Set(types.map((t) => t.id)); applyFilter(); });
+  $('allTypes').addEventListener('click', () => { state.visible = new Set(state.types.map((t) => t.id)); applyFilter(); });
   $('noTypes').addEventListener('click', () => { state.visible = new Set(); applyFilter(); });
   $('zonesToggle').addEventListener('change', (e) => { state.zones = e.target.checked; updateZones(); writeHash(); });
   $('sourceSelect').addEventListener('change', (e) => { state.source = e.target.value; applyFilter(); });
@@ -596,7 +716,10 @@ async function init() {
   $('panelToggle').addEventListener('click', () => document.body.classList.toggle('panel-open'));
   setupSearch();
 
-  if (data.mode !== 'live') return;
+  if (data.mode !== 'live') {
+    setupCsvImport();
+    return;
+  }
   // Данные могли обновиться в панели управления — перечитываем при возврате на вкладку.
   let loadedAt = Date.now();
   document.addEventListener('visibilitychange', async () => {

@@ -4,7 +4,7 @@
 import { api, confirmDialog, fmtNum, session, toast } from './api.js';
 import { iconUrl } from './icons.js';
 
-const BUNDLE = ['/js/api.js', '/js/icons.js', '/js/data.js', '/js/download.js', '/js/map.js'];
+const BUNDLE = ['/js/api.js', '/js/icons.js', '/js/csv.js', '/js/data.js', '/js/download.js', '/js/map.js'];
 const LARGE = 20000;
 
 async function fetchText(url) {
@@ -101,10 +101,7 @@ export function describeFilters(state) {
 export async function downloadSnapshot(map, state, button) {
   const bounds = map.getBounds();
   const inView = state.filtered.filter((f) => bounds.contains(f.geometry.coordinates));
-  if (!inView.length) {
-    toast('На экране нет объектов — измените масштаб или фильтры', 'error');
-    return;
-  }
+  // Без объектов тоже можно: получится пустая карта со справочником типов, объекты загружаются в неё из CSV.
   if (inView.length > LARGE && !(await confirmDialog('Большая выгрузка',
     `На экране ${fmtNum(inView.length)} объектов — файл получится большим и будет медленно открываться. Продолжить?`, 'Скачать', 'primary'))) {
     return;
@@ -113,9 +110,9 @@ export async function downloadSnapshot(map, state, button) {
   button.disabled = true;
   button.textContent = 'Готовлю файл…';
   try {
-    const objects = await api.post('/api/objects/details', { ids: inView.map((f) => f.properties.id) });
-    const usedTypes = new Set(objects.map((o) => o.type_id));
-    const types = await Promise.all(state.types.filter((t) => usedTypes.has(t.id)).map(async (t) => {
+    const objects = inView.length ? await api.post('/api/objects/details', { ids: inView.map((f) => f.properties.id) }) : [];
+    // Весь справочник типов, а не только встретившиеся: CSV, загруженный в страницу позже, может содержать любые типы.
+    const types = await Promise.all(state.types.map(async (t) => {
       const url = iconUrl(t.icon);
       return { ...t, icon_data: url ? await toDataUrl(url).catch(() => null) : null };
     }));
@@ -160,7 +157,7 @@ export async function downloadSnapshot(map, state, button) {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
-    toast(`Скачано объектов: ${fmtNum(objects.length)}`, 'success');
+    toast(objects.length ? `Скачано объектов: ${fmtNum(objects.length)}` : 'Скачана карта без объектов — объекты можно загрузить в неё из CSV', 'success');
   } catch (e) {
     toast(e.message || String(e), 'error', 7000);
   } finally {

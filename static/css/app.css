@@ -267,3 +267,7 @@ label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--t
 .noscript-list h1 { font-size: 16px; margin-bottom: 12px; }
 .noscript-list table { border-collapse: collapse; font-size: 13px; }
 .noscript-list th, .noscript-list td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+.drop-overlay { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: rgba(30, 111, 217, 0.18); border: 3px dashed var(--accent); pointer-events: none; }
+.drop-overlay div { background: var(--surface); padding: 14px 22px; border-radius: var(--radius); box-shadow: var(--shadow); font-size: 15px; }
+.import-errors { max-height: 260px; overflow-y: auto; margin: 0; padding-left: 20px; font-size: 13px; }
+.legend-name .small { white-space: nowrap; }
