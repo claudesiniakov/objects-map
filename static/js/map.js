@@ -4,7 +4,6 @@ import { markerCanvas, markerDataUrl } from './icons.js';
 const $ = (id) => document.getElementById(id);
 const EMPTY = { type: 'FeatureCollection', features: [] };
 const MIN_ZONE_PX = 10;
-const MAX_ZONES = 5000;
 
 const state = {
   settings: null,
@@ -93,52 +92,30 @@ function renderLegend() {
 
 // ---------------------------------------------------------------- зоны
 
-const zoneCache = new Map();
+// Зона рисуется GPU-слоем кругов: радиус в метрах переводится в пиксели выражением от масштаба,
+// поэтому при движении карты данные не пересчитываются. k — радиус в пикселях на масштабе 0
+// (512-пиксельные тайлы, масштаб Меркатора на широте объекта), minz — масштаб, с которого зона шире MIN_ZONE_PX.
+const EARTH_CIRCUMFERENCE_M = 40075016.686;
 
-function circlePolygon(lon, lat, radius, steps = 64) {
-  const coords = [];
-  const dLat = radius / 110574;
-  const dLon = radius / (111320 * Math.cos((lat * Math.PI) / 180));
-  for (let i = 0; i <= steps; i += 1) {
-    const a = (i / steps) * Math.PI * 2;
-    coords.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)]);
-  }
-  return [coords];
-}
-
-function metersPerPixel(lat, zoom) {
-  return (40075016.686 * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** zoom);
+function zoneFeature(f) {
+  const r = f.properties.r;
+  const [, lat] = f.geometry.coordinates;
+  const k = (r * 512) / (EARTH_CIRCUMFERENCE_M * Math.cos((lat * Math.PI) / 180));
+  const t = state.typeById.get(f.properties.t);
+  return {
+    type: 'Feature',
+    geometry: f.geometry,
+    properties: { k, minz: Math.ceil(Math.log2(MIN_ZONE_PX / k)), c: t.color, o: t.fill_opacity },
+  };
 }
 
 function updateZones() {
   const src = map.getSource('zones');
   if (!src) return;
-  if (!state.zones) {
-    src.setData(EMPTY);
-    return;
-  }
-  const zoom = map.getZoom();
-  const b = map.getBounds();
-  const features = [];
-  for (const f of state.filtered) {
-    const r = f.properties.r;
-    if (!r) continue;
-    const [lon, lat] = f.geometry.coordinates;
-    if (r / metersPerPixel(lat, zoom) < MIN_ZONE_PX) continue;
-    const mLat = r / 110574;
-    const mLon = r / (111320 * Math.cos((lat * Math.PI) / 180));
-    if (lat + mLat < b.getSouth() || lat - mLat > b.getNorth() || lon + mLon < b.getWest() || lon - mLon > b.getEast()) continue;
-    const t = state.typeById.get(f.properties.t);
-    const key = `${f.properties.id}|${r}|${lon}|${lat}`;
-    let geom = zoneCache.get(key);
-    if (!geom) {
-      geom = { type: 'Polygon', coordinates: circlePolygon(lon, lat, r) };
-      zoneCache.set(key, geom);
-    }
-    features.push({ type: 'Feature', geometry: geom, properties: { c: t.color, o: t.fill_opacity } });
-    if (features.length >= MAX_ZONES) break;
-  }
-  if (zoneCache.size > 50000) zoneCache.clear();
+  const features = state.zones ? state.filtered.filter((f) => f.properties.r).map(zoneFeature) : [];
+  // На мелких масштабах зон не видно — не даём MapLibre перебирать их в тайлах.
+  const minZoom = features.reduce((m, f) => Math.min(m, f.properties.minz), 24);
+  map.setLayerZoomRange('zones', Math.max(0, Math.min(minZoom, 24)), 24);
   src.setData({ type: 'FeatureCollection', features });
 }
 
@@ -446,8 +423,21 @@ async function init() {
   for (const t of types) clusterProperties[`t_${t.id}`] = ['+', ['case', ['==', ['get', 't'], t.id], 1, 0]];
 
   map.addSource('zones', { type: 'geojson', data: EMPTY });
-  map.addLayer({ id: 'zones-fill', type: 'fill', source: 'zones', paint: { 'fill-color': ['get', 'c'], 'fill-opacity': ['get', 'o'] } });
-  map.addLayer({ id: 'zones-line', type: 'line', source: 'zones', paint: { 'line-color': ['get', 'c'], 'line-width': 1.5, 'line-opacity': 0.9 } });
+  map.addLayer({
+    id: 'zones',
+    type: 'circle',
+    source: 'zones',
+    filter: ['>=', ['zoom'], ['get', 'minz']],
+    paint: {
+      'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 0, ['get', 'k'], 24, ['*', ['get', 'k'], 2 ** 24]],
+      'circle-color': ['get', 'c'],
+      'circle-opacity': ['get', 'o'],
+      'circle-stroke-color': ['get', 'c'],
+      'circle-stroke-width': 1.5,
+      'circle-stroke-opacity': 0.9,
+      'circle-pitch-alignment': 'map',
+    },
+  });
   map.addSource('spider', { type: 'geojson', data: EMPTY });
   map.addLayer({ id: 'spider-legs', type: 'line', source: 'spider', paint: { 'line-color': '#555', 'line-width': 1.2, 'line-opacity': 0.7 } });
   map.addSource('objects', {
@@ -474,7 +464,7 @@ async function init() {
   map.on('render', () => {
     if (map.getSource('objects') && map.isSourceLoaded('objects')) updateClusterMarkers();
   });
-  map.on('moveend', () => { updateZones(); writeHash(); });
+  map.on('moveend', writeHash);
   map.on('zoomstart', clearSpider);
   map.on('click', (e) => {
     if (!map.queryRenderedFeatures(e.point, { layers: ['points'] }).length) clearSpider();
