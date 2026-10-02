@@ -674,7 +674,10 @@ def import_errors(import_id: int, user=Depends(require("operator")), db=Depends(
         sheet, result = _validate_batch(db, b, body)
     else:
         # После записи объекты уже в базе: проверяем только содержимое файла, без сверки с базой.
-        table = importer.load_table(b["stored_file"])
+        try:
+            table = importer.load_table(b["stored_file"])
+        except excel.TableError:
+            raise HTTPException(404, "Исходный файл импорта не сохранился")
         sheet = table[b["sheet"]]
         result = importer.validate(db, sheet, body.mapping, "add" if body.mode == "add" else "upsert", body.source)
         for r in result["rows"]:
