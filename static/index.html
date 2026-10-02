@@ -35,6 +35,7 @@
     <section>
       <h2>Слои</h2>
       <label class="check"><input type="checkbox" id="zonesToggle" checked> Зоны (радиусы)</label>
+      <label class="check"><input type="checkbox" id="polygonsToggle" checked> Полигоны</label>
     </section>
     <section>
       <div class="section-head">
@@ -43,6 +44,7 @@
       </div>
       <div class="filter-list">
         <label>Источник<select id="sourceSelect"><option value="">Все источники</option></select></label>
+        <label>Геометрия<select id="geomSelect"><option value="">Все объекты</option><option value="poly">Только полигоны</option><option value="point">Только точки</option></select></label>
         <div id="attrFilters" class="filter-list"></div>
         <div class="pins-block" id="pinsBlock" hidden>
           <label class="check"><input type="checkbox" id="pinsToggle" checked> Мои метки <span class="muted small" id="pinsCount"></span></label>

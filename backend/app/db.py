@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS map_object (
     contract_number TEXT,
     cadastral_number TEXT,
     cost REAL, -- стоимость, тыс. руб.
+    geometry TEXT, -- GeoJSON Polygon/MultiPolygon; у точечных объектов NULL
     type_id INTEGER NOT NULL REFERENCES object_type(id),
     name TEXT NOT NULL,
     address TEXT,
@@ -146,7 +147,7 @@ DEFAULT_SETTINGS = {
 }
 
 OBJECT_COLUMNS = (
-    "id", "external_id", "contract_number", "cadastral_number", "cost", "type_id", "name", "address", "lat", "lon", "radius_m",
+    "id", "external_id", "contract_number", "cadastral_number", "cost", "geometry", "type_id", "name", "address", "lat", "lon", "radius_m",
     "description", "attributes", "source", "import_id", "search_text", "created_at", "updated_at",
 )
 
@@ -221,7 +222,7 @@ def audit(con, user, action: str, entity: str, entity_id=None, details=None):
 
 # Колонки, добавленные после первого выпуска: в существующей базе их создаём ALTER TABLE.
 MIGRATIONS = {
-    "map_object": [("contract_number", "TEXT"), ("cadastral_number", "TEXT"), ("cost", "REAL")],
+    "map_object": [("contract_number", "TEXT"), ("cadastral_number", "TEXT"), ("cost", "REAL"), ("geometry", "TEXT")],
 }
 
 

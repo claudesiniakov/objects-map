@@ -95,9 +95,9 @@ async function renderImport() {
         <button class="btn" id="tplBtn">Скачать шаблон</button>
       </div>
       <label class="dropzone" id="dropzone">
-        <input type="file" id="fileInput" accept=".xlsx,.xls,.xlsm,.csv" hidden>
+        <input type="file" id="fileInput" accept=".xlsx,.xls,.xlsm,.csv,.geojson,.json" hidden>
         <strong>Перетащите файл сюда</strong> или нажмите, чтобы выбрать
-        <span class="muted small">.xlsx, .xls, .csv — до 20 МБ и 100 000 строк</span>
+        <span class="muted small">.xlsx, .xls, .csv или .geojson (точки и полигоны) — до 20 МБ и 100 000 строк</span>
       </label>
       <div id="importWork"></div>
     </section>
@@ -410,6 +410,7 @@ async function renderObjects(editId) {
         <div class="actions-row">
           <button class="btn primary" id="addObj">Добавить объект</button>
           <button class="btn" id="exportBtn">Экспорт в Excel</button>
+          <button class="btn" id="exportGeoBtn" title="Точки и полигоны; файл можно загрузить обратно импортом">Экспорт в GeoJSON</button>
         </div>
       </div>
       <div class="filters">
@@ -442,14 +443,16 @@ async function renderObjects(editId) {
     sel.addEventListener('change', () => { objState.attrs[sel.dataset.attr] = sel.value; reload(); });
   });
   document.getElementById('addObj').addEventListener('click', () => editObject(null));
-  document.getElementById('exportBtn').addEventListener('click', () => {
-    const p = new URLSearchParams();
+  const exportUrl = (format) => {
+    const p = new URLSearchParams({ format });
     if (objState.q) p.set('q', objState.q);
     if (objState.type_id) p.set('type_id', objState.type_id);
     if (objState.source) p.set('source', objState.source);
     attrsParam(p);
-    download(`/api/export?${p}`, 'objects.xlsx').catch(fail);
-  });
+    return `/api/export?${p}`;
+  };
+  document.getElementById('exportBtn').addEventListener('click', () => download(exportUrl('xlsx'), 'objects.xlsx').catch(fail));
+  document.getElementById('exportGeoBtn').addEventListener('click', () => download(exportUrl('geojson'), 'objects.geojson').catch(fail));
   document.getElementById('bulkClear').addEventListener('click', () => { objState.selected.clear(); loadObjectsTable(); });
   document.getElementById('bulkDel').addEventListener('click', async () => {
     const ids = [...objState.selected];
@@ -503,7 +506,7 @@ async function loadObjectsTable() {
           : `<th>${label}</th>`)).join('')}</tr></thead>
       <tbody>${items.map((o, i) => `<tr data-id="${o.id}">
         <td><input type="checkbox" data-sel="${o.id}" ${objState.selected.has(o.id) ? 'checked' : ''}></td>
-        <td>${esc(o.external_id)}</td><td>${esc(o.contract_number)}</td><td class="mono small nowrap">${esc(o.cadastral_number)}</td><td><b>${esc(o.name)}</b></td><td class="num nowrap">${o.cost != null ? o.cost.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) : ''}</td>
+        <td>${esc(o.external_id)}</td><td>${esc(o.contract_number)}</td><td class="mono small nowrap">${esc(o.cadastral_number)}</td><td><b>${esc(o.name)}</b>${o.polygon ? ' <span class="badge" title="У объекта есть контур">полигон</span>' : ''}</td><td class="num nowrap">${o.cost != null ? o.cost.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) : ''}</td>
         <td class="nowrap"><img src="${icons[i]}" class="tiny-icon" alt=""> ${esc(o.type_name)}</td>
         <td>${esc(o.address)}</td><td class="mono small nowrap">${o.lat.toFixed(5)}, ${o.lon.toFixed(5)}</td>
         <td class="num">${o.effective_radius_m ? fmtNum(o.effective_radius_m) : ''}${o.effective_radius_m && !o.radius_m ? '<span class="muted">*</span>' : ''}</td>

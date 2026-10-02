@@ -2,6 +2,7 @@
 
 import csv
 import io
+import json
 from datetime import date, datetime
 from pathlib import Path
 
@@ -58,6 +59,13 @@ def _split_header(rows: list[list]) -> dict:
 def read_table(path: Path) -> dict[str, dict]:
     """Возвращает {имя листа: {"headers": [...], "rows": [(номер строки в файле, [значения])]}}."""
     suffix = path.suffix.lower()
+    if suffix in (".geojson", ".json"):
+        from .geo import GeometryError, read_geojson
+
+        try:
+            return read_geojson(path)
+        except GeometryError as e:
+            raise TableError(str(e)) from e
     sheets: dict[str, list[list]] = {}
     try:
         if suffix in (".xlsx", ".xlsm"):
@@ -100,7 +108,7 @@ def read_table(path: Path) -> dict[str, dict]:
                 dialect = type("Fallback", (csv.excel,), {"delimiter": delimiter})
             sheets["CSV"] = [row for row in csv.reader(io.StringIO(text), dialect)]
         else:
-            raise TableError("Поддерживаются файлы .xlsx, .xls и .csv")
+            raise TableError("Поддерживаются файлы .xlsx, .xls, .csv и .geojson")
     except TableError:
         raise
     except Exception as e:  # повреждённый файл, не тот формат и т.п.
@@ -153,6 +161,8 @@ def build_template(types: list[dict]) -> bytes:
         "ID — внешний идентификатор; нужен для режима «Обновить / добавить».",
         "Номер договора и кадастровый номер — текст; кадастровый номер в формате 77:01:0001001:1234.",
         "Стоимость, тыс. руб. — число не меньше 0, можно дробное (12500,5 = 12,5 млн руб.).",
+        "Полигон — необязательная колонка «Геометрия (GeoJSON)» с Polygon/MultiPolygon в WGS-84; тогда координаты можно "
+        "не заполнять — маркер встанет посередине. Полигоны удобнее загружать файлом .geojson.",
         "Радиус, м — целое число от 1 до 100 000; учитывается только для типов с зоной. Пусто — радиус типа.",
         "Любые другие колонки сохраняются как дополнительные поля и видны в карточке объекта.",
     ]:
@@ -169,8 +179,13 @@ def _cell(v):
     return v
 
 
+GEOMETRY_HEADER = "Геометрия (GeoJSON)"
+EXCEL_CELL_LIMIT = 32000
+
+
 def build_export(objects: list[dict]) -> bytes:
     attr_keys: list[str] = []
+    with_geometry = any(o.get("geometry") for o in objects)
     seen = set()
     for o in objects:
         for k in o["attributes"]:
@@ -180,15 +195,38 @@ def build_export(objects: list[dict]) -> bytes:
     wb = Workbook(write_only=False)
     ws = wb.active
     ws.title = "Объекты"
-    _header_row(ws, TEMPLATE_HEADERS + attr_keys)
+    _header_row(ws, TEMPLATE_HEADERS + ([GEOMETRY_HEADER] if with_geometry else []) + attr_keys)
     for o in objects:
+        geom = []
+        if with_geometry:
+            text = json.dumps(o["geometry"], separators=(",", ":")) if o.get("geometry") else None
+            # В ячейку Excel помещается ~32 тыс. символов: большие контуры — только в выгрузке GeoJSON.
+            geom = [text if not text or len(text) <= EXCEL_CELL_LIMIT else None]
         ws.append(
             [o["external_id"], o["contract_number"], o["cadastral_number"], o["type_name"], o["name"], o["lat"],
              o["lon"], o["address"], o["radius_m"], o["cost"], o["description"]]
+            + geom
             + [_cell(o["attributes"].get(k)) for k in attr_keys]
         )
     _autosize(ws)
+    if with_geometry:
+        ws.column_dimensions[get_column_letter(len(TEMPLATE_HEADERS) + 1)].width = 30
     return to_bytes(wb)
+
+
+def build_geojson(objects: list[dict]) -> dict:
+    """GeoJSON для обмена: свойства названы как колонки шаблона — файл можно загрузить обратно импортом."""
+    features = []
+    for o in objects:
+        props = {
+            "ID": o["external_id"], "Номер договора": o["contract_number"], "Кадастровый номер": o["cadastral_number"],
+            "Тип": o["type_name"], "Название": o["name"], "Адрес": o["address"], "Радиус, м": o["radius_m"],
+            "Стоимость, тыс. руб.": o["cost"], "Описание": o["description"],
+        }
+        props.update({k: _cell(v) for k, v in o["attributes"].items() if k not in props})
+        geometry = o.get("geometry") or {"type": "Point", "coordinates": [o["lon"], o["lat"]]}
+        features.append({"type": "Feature", "geometry": geometry, "properties": props})
+    return {"type": "FeatureCollection", "features": features}
 
 
 def build_error_report(headers: list[str], rows: list[dict]) -> bytes:

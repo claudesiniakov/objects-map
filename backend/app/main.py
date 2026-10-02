@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
-from . import excel, importer
+from . import excel, geo, importer
 from .auth import (check_password, client_ip, current_user, hash_password, login_blocked, make_token,
                    register_failed_login, require)
 from .config import ICON_DIR, IMPORT_DIR, MAX_RADIUS_M, MAX_UPLOAD_MB
@@ -287,7 +287,9 @@ _map_cache: dict = {}
 
 
 def effective_radius_sql() -> str:
-    return "CASE WHEN t.has_radius THEN COALESCE(o.radius_m, t.default_radius_m) END"
+    # У полигона своя площадь: радиус типа по умолчанию к нему не применяется, только явно заданный у объекта.
+    return ("CASE WHEN t.has_radius THEN COALESCE(o.radius_m,"
+            " CASE WHEN o.geometry IS NULL THEN t.default_radius_m END) END")
 
 
 @app.get("/api/objects")
@@ -320,15 +322,17 @@ def map_objects(
         if source:
             where.append("o.source = ?")
             params.append(source)
-        sql = (f"SELECT o.id, o.type_id, o.name, o.lat, o.lon, o.source, {effective_radius_sql()} AS r, o.cost{attr_sql}"
+        sql = (f"SELECT o.id, o.type_id, o.name, o.lat, o.lon, o.source, {effective_radius_sql()} AS r, o.cost, o.geometry IS NOT NULL{attr_sql}"
                " FROM map_object o JOIN object_type t ON t.id = o.type_id")
         if where:
             sql += " WHERE " + " AND ".join(where)
         feats = []
         for r in db.execute(sql, params):
             props = {"id": r[0], "t": r[1], "n": r[2], "s": r[5], "r": r[6], "c": r[7]}
+            if r[8]:
+                props["g"] = 1  # у объекта есть полигон — контур отдаёт /api/polygons
             if attrs:
-                props["a"] = [attr_text(v) for v in r[8:]]
+                props["a"] = [attr_text(v) for v in r[9:]]
             feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [r[4], r[3]]},
                           "properties": props})
         cached = json.dumps({"type": "FeatureCollection", "features": feats}, ensure_ascii=False,
@@ -366,10 +370,28 @@ def attribute_values(name: str = Query(min_length=1), user=Depends(current_user)
     return [{"value": k, "objects": n} for k, n in out.items()]
 
 
-def object_dict(row) -> dict:
+@app.get("/api/polygons")
+def polygons(user=Depends(current_user), db=Depends(get_db)):
+    """Контуры объектов-полигонов: FeatureCollection со свойством id."""
+    key = ("polygons", DataVersion.value)
+    cached = _map_cache.get(key)
+    if cached is None:
+        parts = [f'{{"type":"Feature","geometry":{g},"properties":{{"id":{i}}}}}'
+                 for i, g in db.execute("SELECT id, geometry FROM map_object WHERE geometry IS NOT NULL")]
+        cached = ('{"type":"FeatureCollection","features":[' + ",".join(parts) + "]}").encode()
+        _map_cache[key] = cached
+    return Response(cached, media_type="application/json", headers={"Cache-Control": "no-cache"})
+
+
+def object_dict(row, with_geometry: bool = True) -> dict:
     d = dict(row)
     d.pop("search_text", None)
     d["attributes"] = json.loads(d["attributes"] or "{}")
+    raw = d.pop("geometry", None)
+    d["polygon"] = bool(raw)
+    if with_geometry:
+        d["geometry"] = json.loads(raw) if raw else None
+        d["area_m2"] = round(geo.area_m2(d["geometry"]), 1) if raw else None
     return d
 
 
@@ -615,6 +637,7 @@ class ObjectIn(BaseModel):
     contract_number: str | None = Field(default=None, max_length=100)
     cadastral_number: str | None = Field(default=None, max_length=100)
     cost: float | None = Field(default=None, ge=0, description="Стоимость, тыс. руб.")
+    geometry: dict | None = Field(default=None, description="GeoJSON Polygon/MultiPolygon; не передан — контур не меняется")
     type_id: int
     name: str = Field(min_length=1, max_length=500)
     address: str | None = None
@@ -635,6 +658,17 @@ class ObjectIn(BaseModel):
 
 
 def _save_object(db, body: ObjectIn, object_id=None):
+    oid = _save_object_fields(db, body, object_id)
+    if "geometry" in body.model_fields_set:
+        try:
+            geom = geo.parse_geometry(body.geometry)
+        except geo.GeometryError as e:
+            raise HTTPException(422, f"Геометрия: {e}")
+        db.execute("UPDATE map_object SET geometry = ? WHERE id = ?", (geo.dumps(geom), oid))
+    return oid
+
+
+def _save_object_fields(db, body: ObjectIn, object_id=None):
     row_or_404(db, "SELECT id FROM object_type WHERE id = ?", (body.type_id,), "Тип")
     if body.external_id:
         clash = db.execute("SELECT id FROM map_object WHERE external_id = ? AND id IS NOT ?",
@@ -728,7 +762,7 @@ def admin_objects(
         OBJECT_SELECT + where + f" ORDER BY {order_sql} LIMIT ? OFFSET ?",
         params + [page_size, (page - 1) * page_size],
     ).fetchall()
-    return {"total": total, "items": [object_dict(r) for r in rows]}
+    return {"total": total, "items": [object_dict(r, with_geometry=False) for r in rows]}
 
 
 @app.post("/api/objects")
@@ -807,6 +841,7 @@ def export(
     source: str | None = None,
     import_id: int | None = None,
     attrs: str | None = Query(None, description='JSON {"поле": "значение"}, null — поле не заполнено'),
+    format: str = Query("xlsx", pattern="^(xlsx|geojson)$"),
     user=Depends(require("operator")),
     db=Depends(get_db),
 ):
@@ -817,6 +852,12 @@ def export(
         params += ids
     rows = [object_dict(r) for r in db.execute(OBJECT_SELECT + where + " ORDER BY o.id", params)]
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    if format == "geojson":
+        from urllib.parse import quote
+
+        body = json.dumps(excel.build_geojson(rows), ensure_ascii=False, separators=(",", ":")).encode()
+        return Response(body, media_type="application/geo+json",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(f'objects_{stamp}.geojson')}"})
     return xlsx_response(excel.build_export(rows), f"objects_{stamp}.xlsx")
 
 
@@ -854,8 +895,8 @@ async def import_upload(file: UploadFile = File(...), user=Depends(require("oper
     """Шаг 1: загрузка файла. Возвращает листы, колонки и предложенное сопоставление."""
     name = Path(file.filename or "file").name
     suffix = Path(name).suffix.lower()
-    if suffix not in (".xlsx", ".xlsm", ".xls", ".csv"):
-        raise HTTPException(422, "Поддерживаются файлы .xlsx, .xls и .csv")
+    if suffix not in (".xlsx", ".xlsm", ".xls", ".csv", ".geojson", ".json"):
+        raise HTTPException(422, "Поддерживаются файлы .xlsx, .xls, .csv и .geojson")
     data = await file.read(MAX_UPLOAD_MB * 1024 * 1024 + 1)
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(413, f"Файл больше {MAX_UPLOAD_MB} МБ")

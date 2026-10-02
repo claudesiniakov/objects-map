@@ -19,6 +19,9 @@ const state = {
   visible: new Set(),
   zones: true,
   source: '',
+  polygons: new Map(), // id объекта → GeoJSON-контур
+  showPolygons: true,
+  geom: '', // фильтр по геометрии: '' — все, 'poly' — только полигоны, 'point' — только точки
   attrNames: [], // поля из настройки filter_attributes
   attrs: [], // выбранное значение по каждому полю: '' — все, NONE — не заполнено
 };
@@ -42,6 +45,8 @@ function readHash() {
   if (p.has('types')) out.types = p.get('types').split(',').filter(Boolean).map(Number);
   if (p.has('zones')) out.zones = p.get('zones') !== '0';
   if (p.has('source')) out.source = p.get('source');
+  if (p.has('poly')) out.showPolygons = p.get('poly') !== '0';
+  if (['poly', 'point'].includes(p.get('geom'))) out.geom = p.get('geom');
   out.attrs = {};
   for (const [k, v] of p) if (k.startsWith('a.')) out.attrs[k.slice(2)] = v === '-' ? NONE : v;
   return out;
@@ -55,6 +60,8 @@ function writeHash() {
   if (state.visible.size !== state.types.length) p.set('types', [...state.visible].join(','));
   if (!state.zones) p.set('zones', '0');
   if (state.source) p.set('source', state.source);
+  if (!state.showPolygons) p.set('poly', '0');
+  if (state.geom) p.set('geom', state.geom);
   state.attrNames.forEach((name, i) => { if (state.attrs[i]) p.set(`a.${name}`, state.attrs[i] === NONE ? '-' : state.attrs[i]); });
   history.replaceState(null, '', `#${p.toString().replace(/%2F/g, '/').replace(/%2C/g, ',')}`);
 }
@@ -64,6 +71,8 @@ function writeHash() {
 // Фильтры помимо типа: источник и дополнительные поля.
 function passesExtra(f) {
   if (state.source && f.properties.s !== state.source) return false;
+  if (state.geom === 'poly' && !f.properties.g) return false;
+  if (state.geom === 'point' && f.properties.g) return false;
   for (let i = 0; i < state.attrs.length; i += 1) {
     const want = state.attrs[i];
     if (!want) continue;
@@ -74,7 +83,7 @@ function passesExtra(f) {
 }
 
 function hasExtraFilters() {
-  return Boolean(state.source) || state.attrs.some(Boolean);
+  return Boolean(state.source) || Boolean(state.geom) || state.attrs.some(Boolean);
 }
 
 function applyFilter() {
@@ -84,12 +93,33 @@ function applyFilter() {
   clearSpider();
   map.getSource('objects')?.setData({ type: 'FeatureCollection', features: state.filtered });
   updateZones();
+  updatePolygons();
   renderLegend();
   writeHash();
 }
 
+// Полигоны рисуются для объектов, прошедших фильтры; маркер объекта стоит посередине контура.
+function updatePolygons() {
+  const src = map?.getSource('polygons');
+  if (!src) return;
+  const features = [];
+  if (state.showPolygons) {
+    for (const f of state.filtered) {
+      if (!f.properties.g) continue;
+      const geometry = state.polygons.get(f.properties.id);
+      const t = state.typeById.get(f.properties.t);
+      if (geometry) features.push({ type: 'Feature', geometry, properties: { id: f.properties.id, c: t?.color || '#555' } });
+    }
+  }
+  src.setData({ type: 'FeatureCollection', features });
+}
+
 async function loadObjects() {
   state.all = await data.objects();
+  state.polygons = new Map();
+  if (state.all.features.some((f) => f.properties.g)) {
+    for (const f of (await data.polygons()).features) state.polygons.set(f.properties.id, f.geometry);
+  }
 }
 
 function costSummary() {
@@ -405,6 +435,13 @@ async function copyText(text) {
   }
 }
 
+function fmtArea(m2) {
+  if (m2 < 10000) return `${fmtNum(Math.round(m2))} м²`;
+  const ha = (m2 / 1e4).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+  if (m2 < 1e6) return `${ha} га`;
+  return `${(m2 / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} км² (${ha} га)`;
+}
+
 function cardHtml(o, icon) {
   const radius = o.effective_radius_m
     ? `${fmtNum(o.effective_radius_m)} м${o.radius_m ? '' : ' <span class="muted">(по типу)</span>'}`
@@ -423,6 +460,7 @@ function cardHtml(o, icon) {
       ${row('Адрес', esc(o.address))}
       ${row('Координаты', copyable(`${o.lat.toFixed(6)}, ${o.lon.toFixed(6)}`, `${o.lat}, ${o.lon}`))}
       ${row('Радиус', radius)}
+      ${row('Площадь', o.area_m2 ? `${fmtArea(o.area_m2)} <span class="muted">(полигон)</span>` : '')}
       ${row('Описание', esc(o.description).replace(/\n/g, '<br>'))}
       ${attrs}
       ${row('Источник', esc(o.source))}
@@ -971,6 +1009,8 @@ async function renderAttrFilters() {
 function resetFilters() {
   state.source = '';
   $('sourceSelect').value = '';
+  state.geom = '';
+  $('geomSelect').value = '';
   state.attrs = state.attrNames.map(() => '');
   $('attrFilters').querySelectorAll('select').forEach((s) => { s.value = ''; });
   applyFilter();
@@ -1171,6 +1211,10 @@ async function init() {
   const startView = fromHash.view ?? data.meta?.view;
   state.zones = fromHash.zones ?? true;
   state.source = fromHash.source ?? '';
+  state.showPolygons = fromHash.showPolygons ?? true;
+  state.geom = fromHash.geom ?? '';
+  $('polygonsToggle').checked = state.showPolygons;
+  $('geomSelect').value = state.geom;
   $('zonesToggle').checked = state.zones;
   renderSources(sources);
   state.attrNames = settings.filter_attributes || [];
@@ -1222,6 +1266,9 @@ async function init() {
       'circle-pitch-alignment': 'map',
     },
   });
+  map.addSource('polygons', { type: 'geojson', data: EMPTY });
+  map.addLayer({ id: 'polygons-fill', type: 'fill', source: 'polygons', paint: { 'fill-color': ['get', 'c'], 'fill-opacity': 0.18 } });
+  map.addLayer({ id: 'polygons-line', type: 'line', source: 'polygons', paint: { 'line-color': ['get', 'c'], 'line-width': 2, 'line-opacity': 0.9 } });
   map.addSource('pin-zone', { type: 'geojson', data: EMPTY });
   map.addLayer({
     id: 'pin-zone',
@@ -1268,6 +1315,13 @@ async function init() {
     map.getCanvas().style.cursor = '';
     hoverPopup.remove();
   });
+  map.on('click', 'polygons-fill', (e) => {
+    // Маркер поверх полигона открывает свою карточку сам.
+    if (map.queryRenderedFeatures(e.point, { layers: ['points'] }).length) return;
+    openCard(e.features[0].properties.id);
+  });
+  map.on('mouseenter', 'polygons-fill', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'polygons-fill', () => { map.getCanvas().style.cursor = ''; });
   map.on('click', 'points', (e) => {
     const f = e.features[0];
     const p = map.project(f.geometry.coordinates);
@@ -1291,6 +1345,8 @@ async function init() {
   $('noTypes').addEventListener('click', () => { state.visible = new Set(); applyFilter(); });
   $('zonesToggle').addEventListener('change', (e) => { state.zones = e.target.checked; updateZones(); writeHash(); });
   $('sourceSelect').addEventListener('change', (e) => { state.source = e.target.value; applyFilter(); });
+  $('geomSelect').addEventListener('change', (e) => { state.geom = e.target.value; applyFilter(); });
+  $('polygonsToggle').addEventListener('change', (e) => { state.showPolygons = e.target.checked; updatePolygons(); writeHash(); });
   $('attrFilters').addEventListener('change', (e) => {
     state.attrs[Number(e.target.dataset.attr)] = e.target.value;
     applyFilter();

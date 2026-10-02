@@ -11,6 +11,7 @@ from pathlib import Path
 from .config import IMPORT_DIR, MAX_RADIUS_M
 from .db import DataVersion, audit, now, search_text, tx
 from .excel import read_table
+from .geo import GeometryError, dumps as geometry_dumps, label_point, parse_geometry
 
 FIELDS = OrderedDict(
     [
@@ -18,6 +19,7 @@ FIELDS = OrderedDict(
         ("contract_number", "Номер договора"),
         ("cadastral_number", "Кадастровый номер"),
         ("cost", "Стоимость, тыс. руб."),
+        ("geometry", "Геометрия (GeoJSON)"),
         ("type", "Тип"),
         ("name", "Название"),
         ("lat", "Широта"),
@@ -40,10 +42,11 @@ SYNONYMS = {
                          "cadastral number"],
     "cost": ["стоимость", "стоимость, тыс. руб.", "стоимость, тыс. руб", "стоимость (тыс. руб.)", "стоимость тыс. руб.",
              "стоимость тыс руб", "стоимость, тыс.", "цена", "cost"],
+    "geometry": ["геометрия (geojson)", "геометрия", "geometry", "geojson", "контур"],
     "type": ["тип", "type", "тип объекта", "вид"],
     "name": ["название", "наименование", "name", "имя", "объект"],
-    "lat": ["широта", "lat", "latitude", "y", "широта (lat)"],
-    "lon": ["долгота", "lon", "lng", "long", "longitude", "x", "долгота (lon)"],
+    "lat": ["широта", "lat", "latitude", "y", "широта (lat)", "широта (центр)"],
+    "lon": ["долгота", "lon", "lng", "long", "longitude", "x", "долгота (lon)", "долгота (центр)"],
     "address": ["адрес", "address", "местоположение"],
     "radius_m": ["радиус", "радиус, м", "радиус (м)", "радиус м", "radius", "radius_m", "радиус зоны"],
     "description": ["описание", "description", "комментарий", "примечание"],
@@ -129,7 +132,8 @@ def validate(db, table: dict, mapping: dict, mode: str, source: str) -> dict:
                 problems.append(f"Поле «{FIELDS[f]}» сопоставлено двум колонкам")
             by_field[f] = headers.index(h)
     for f in REQUIRED:
-        if f not in by_field:
+        # С колонкой геометрии координаты не обязательны — маркер ставится посередине полигона.
+        if f not in by_field and not (f in ("lat", "lon") and "geometry" in by_field):
             problems.append(f"Не выбрана колонка для обязательного поля «{FIELDS[f]}»")
     if mode == "upsert" and "external_id" not in by_field:
         problems.append("Для режима «Обновить / добавить» нужна колонка ID")
@@ -203,6 +207,17 @@ def validate(db, table: dict, mapping: dict, mode: str, source: str) -> dict:
         if cadastral and not CADASTRAL_RE.match(cadastral):
             warnings.append(f"Кадастровый номер «{cadastral}» не похож на формат 77:01:0001001:1234")
 
+        geometry = None
+        geom_raw = col(values, "geometry")
+        if geom_raw not in (None, ""):
+            try:
+                geometry = parse_geometry(geom_raw)
+            except GeometryError as e:
+                errors.append(f"Геометрия: {e}")
+            coord_errors = any("Широта" in e or "Долгота" in e for e in errors)
+            if geometry and (lat is None or lon is None) and not coord_errors:
+                lat, lon = label_point(geometry)
+
         address = _text(col(values, "address"))
         if lat is None or lon is None:
             if not any("Широта" in e or "Долгота" in e for e in errors):
@@ -243,6 +258,7 @@ def validate(db, table: dict, mapping: dict, mode: str, source: str) -> dict:
                     "contract_number": _text(col(values, "contract_number")),
                     "cadastral_number": cadastral,
                     "cost": cost,
+                    "geometry": geometry,
                     "type_id": type_row["id"] if type_row else None,
                     "type_name": type_row["name"] if type_row else type_raw,
                     "name": name,
@@ -311,6 +327,7 @@ def validate(db, table: dict, mapping: dict, mode: str, source: str) -> dict:
 
     return {
         "rows": rows,
+        "has_geometry": "geometry" in by_field,
         "counts": {
             "total": len(rows),
             "create": counts["create"],
@@ -337,6 +354,7 @@ def preview_payload(result: dict, limit: int = 300) -> dict:
             "contract_number": d["contract_number"],
             "cadastral_number": d["cadastral_number"],
             "cost": d["cost"],
+            "polygon": bool(d["geometry"]),
             "type_name": d["type_name"],
             "name": d["name"],
             "lat": d["lat"],
@@ -386,16 +404,17 @@ def commit(db, batch: dict, result: dict, user) -> dict:
                 continue
             d = r["data"]
             st = search_text(d["name"], d["address"], d["external_id"], d["contract_number"], d["cadastral_number"])
+            geom = geometry_dumps(d["geometry"])
             attrs = json.dumps(d["attributes"], ensure_ascii=False)
             if r["action"] == "update":
                 before = db.execute("SELECT * FROM map_object WHERE id = ?", (r["object_id"],)).fetchone()
                 db.execute(
                     "UPDATE map_object SET contract_number=?, cadastral_number=?, type_id=?, name=?, address=?, lat=?,"
                     " lon=?, radius_m=?, description=?, attributes=?, source=?, import_id=?, search_text=?, updated_at=?,"
-                    " cost=? WHERE id=?",
+                    " cost=?, geometry = CASE WHEN ? THEN ? ELSE geometry END WHERE id=?",
                     (d["contract_number"], d["cadastral_number"], d["type_id"], d["name"], d["address"], d["lat"],
                      d["lon"], d["radius_m"], d["description"], attrs, source, import_id, st, ts, d["cost"],
-                     r["object_id"]),
+                     int(result["has_geometry"]), geom, r["object_id"]),
                 )
                 db.execute(
                     "INSERT INTO import_change (import_id, object_id, action, before) VALUES (?,?,?,?)",
@@ -405,11 +424,11 @@ def commit(db, batch: dict, result: dict, user) -> dict:
             else:
                 cur = db.execute(
                     "INSERT INTO map_object (external_id, contract_number, cadastral_number, type_id, name, address, lat,"
-                    " lon, radius_m, description, attributes, source, import_id, search_text, created_at, updated_at, cost)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " lon, radius_m, description, attributes, source, import_id, search_text, created_at, updated_at, cost,"
+                    " geometry) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (d["external_id"], d["contract_number"], d["cadastral_number"], d["type_id"], d["name"],
                      d["address"], d["lat"], d["lon"], d["radius_m"], d["description"], attrs, source, import_id, st,
-                     ts, ts, d["cost"]),
+                     ts, ts, d["cost"], geom),
                 )
                 db.execute(
                     "INSERT INTO import_change (import_id, object_id, action) VALUES (?,?,?)",

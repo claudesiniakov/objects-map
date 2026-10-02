@@ -9,6 +9,7 @@ const liveProvider = {
   types: () => api.get('/api/types'),
   sources: () => api.get('/api/sources'),
   objects: () => api.get('/api/objects'),
+  polygons: () => api.get('/api/polygons'),
   object: (id) => api.get(`/api/objects/${id}`),
   search: (q) => api.get(`/api/search?q=${encodeURIComponent(q)}`),
   attributeValues: (name) => api.get(`/api/attribute-values?name=${encodeURIComponent(name)}`),
@@ -57,7 +58,7 @@ function snapshotProvider(snap) {
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [o.lon, o.lat] },
       properties: {
-        id: o.id, t: o.type_id, n: o.name, s: o.source, r: o.effective_radius_m, c: o.cost ?? null,
+        id: o.id, t: o.type_id, n: o.name, s: o.source, r: o.effective_radius_m, c: o.cost ?? null, ...(o.geometry ? { g: 1 } : {}),
         a: attrNames.map((name) => attrText(o.attributes?.[name])),
       },
     }));
@@ -76,6 +77,10 @@ function snapshotProvider(snap) {
       .sort(([a], [b]) => a.localeCompare(b, 'ru'))
       .map(([source, n]) => ({ source, objects: n })),
     objects: async () => ({ type: 'FeatureCollection', features }),
+    polygons: async () => ({
+      type: 'FeatureCollection',
+      features: objects.filter((o) => o.geometry).map((o) => ({ type: 'Feature', geometry: o.geometry, properties: { id: o.id } })),
+    }),
     object: async (id) => {
       const o = byId.get(id);
       if (!o) throw new Error('Объекта нет на карте');
