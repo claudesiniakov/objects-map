@@ -359,7 +359,7 @@ function cardHtml(o, icon) {
     </div>
     <table class="kv">
       ${row('ID', esc(o.external_id))}
-      ${row('Номер договора', esc(o.contract_number))}
+      ${row('Номер договора', o.contract_number ? copyable(esc(o.contract_number), o.contract_number) : '')}
       ${row('Кадастровый номер', o.cadastral_number ? copyable(esc(o.cadastral_number), o.cadastral_number) : '')}
       ${row('Адрес', esc(o.address))}
       ${row('Координаты', copyable(`${o.lat.toFixed(6)}, ${o.lon.toFixed(6)}`, `${o.lat}, ${o.lon}`))}
