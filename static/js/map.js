@@ -1,4 +1,4 @@
-import { can, confirmDialog, debounce, esc, fail, fmtCost, fmtDate, fmtNum, logout, modal, toast } from './api.js';
+import { can, confirmDialog, debounce, esc, fail, fmtCost, fmtDate, fmtNum, logout, modal, plural, toast } from './api.js';
 import { csvToObjects, parseCsv, readCsvFile } from './csv.js';
 import { createProvider } from './data.js';
 import { downloadSnapshot } from './download.js';
@@ -193,13 +193,6 @@ function updateZones() {
 
 // ---------------------------------------------------------------- кластеры
 
-function plural(n, one, few, many) {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
-}
 
 function clusterBucket(n) {
   if (n < 10) return { size: 36, cls: 'c-small' };

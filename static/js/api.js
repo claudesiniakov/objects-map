@@ -117,7 +117,7 @@ export function fail(err) {
 
 // ---------------------------------------------------------------- модальные окна
 
-export function modal(title, bodyHtml, { wide = false, actions = [] } = {}) {
+export function modal(title, bodyHtml, { wide = false, actions = [], onEscape = null } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'modal-backdrop';
   wrap.innerHTML = `
@@ -128,7 +128,12 @@ export function modal(title, bodyHtml, { wide = false, actions = [] } = {}) {
     </div>`;
   const foot = wrap.querySelector('.modal-foot');
   const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  // onEscape() → true: клавишу обработал сам диалог (например, отменил рисование), окно не закрываем.
+  const onKey = (e) => {
+    if (e.key !== 'Escape' || [...document.querySelectorAll('.modal-backdrop')].at(-1) !== wrap) return; // только верхнее окно
+    if (onEscape?.()) return;
+    close();
+  };
   for (const a of actions) {
     const b = document.createElement('button');
     b.className = `btn ${a.kind || ''}`;
@@ -246,6 +251,15 @@ export function fmtCost(thousands) {
   if (v >= 1e6) return `${f(v / 1e6)} млрд ₽`;
   if (v >= 1e3) return `${f(v / 1e3)} млн ₽`;
   return `${f(v)} тыс. ₽`;
+}
+
+/** Склонение по числу: plural(3, 'объект', 'объекта', 'объектов') → «объекта». */
+export function plural(n, one, few, many) {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
 }
 
 export function fmtNum(n) {

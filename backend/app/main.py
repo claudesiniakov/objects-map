@@ -641,8 +641,8 @@ class ObjectIn(BaseModel):
     type_id: int
     name: str = Field(min_length=1, max_length=500)
     address: str | None = None
-    lat: float = Field(ge=-90, le=90)
-    lon: float = Field(ge=-180, le=180)
+    lat: float | None = Field(default=None, ge=-90, le=90)  # не задано — посередине контура (если он передан)
+    lon: float | None = Field(default=None, ge=-180, le=180)
     radius_m: int | None = Field(default=None, ge=1, le=MAX_RADIUS_M)
     description: str | None = None
     attributes: dict = {}
@@ -658,12 +658,22 @@ class ObjectIn(BaseModel):
 
 
 def _save_object(db, body: ObjectIn, object_id=None):
-    oid = _save_object_fields(db, body, object_id)
-    if "geometry" in body.model_fields_set:
+    geometry_given = "geometry" in body.model_fields_set
+    geom = None
+    if geometry_given:
         try:
             geom = geo.parse_geometry(body.geometry)
         except geo.GeometryError as e:
             raise HTTPException(422, f"Геометрия: {e}")
+        if geom:
+            # Маркер — внутри контура: если координат нет или точка вне полигона, ставим её посередине.
+            inside = body.lat is not None and body.lon is not None and geo.contains(geom, body.lon, body.lat)
+            if not inside:
+                body.lat, body.lon = geo.label_point(geom)
+    if body.lat is None or body.lon is None:
+        raise HTTPException(422, "Укажите координаты или нарисуйте контур")
+    oid = _save_object_fields(db, body, object_id)
+    if geometry_given:
         db.execute("UPDATE map_object SET geometry = ? WHERE id = ?", (geo.dumps(geom), oid))
     return oid
 

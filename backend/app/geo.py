@@ -83,6 +83,12 @@ def _in_polygon(x, y, rings) -> bool:
     return _inside(x, y, rings[0]) and not any(_inside(x, y, hole) for hole in rings[1:])
 
 
+def contains(geometry: dict, lon: float, lat: float) -> bool:
+    """Лежит ли точка внутри полигона (с учётом дыр) или одной из частей мультиполигона."""
+    polys = [geometry["coordinates"]] if geometry["type"] == "Polygon" else geometry["coordinates"]
+    return any(_in_polygon(lon, lat, rings) for rings in polys)
+
+
 def label_point(geometry: dict) -> tuple[float, float]:
     """Точка для маркера: центр тяжести самого большого контура, а если он вне полигона (вогнутая форма или дыра) —
     середина самого широкого отрезка горизонтали через центр, лежащего внутри полигона. Возвращает (lat, lon)."""

@@ -1,6 +1,6 @@
 import {
   ROLE_NAME, api, can, confirmDialog, debounce, download, ensureLogin, esc, fail, fmtDate, fmtNum, logout, modal,
-  request, toast,
+  plural, request, toast,
 } from './api.js';
 import { ICON_NAMES, glyphSvg, markerCanvas, markerDataUrl } from './icons.js';
 
@@ -571,8 +571,92 @@ function textToAttrs(text) {
   return out;
 }
 
+// ---------------------------------------------------------------- редактор контура (полигона) в форме объекта
+
+let drawConfigured = false;
+
+// Свои стили рисования: стандартный пунктир активного контура в MapLibre не отображается.
+const DRAW_IDLE = '#1e6fd9';
+const DRAW_ACTIVE = '#fb8c00';
+const notStatic = ['!=', 'mode', 'static'];
+const DRAW_STYLES = [
+  { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], notStatic],
+    paint: { 'fill-color': DRAW_IDLE, 'fill-opacity': 0.15 } },
+  { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']],
+    paint: { 'fill-color': DRAW_ACTIVE, 'fill-opacity': 0.18 } },
+  { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], notStatic],
+    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': DRAW_IDLE, 'line-width': 2 } },
+  { id: 'gl-draw-polygon-stroke-active', type: 'line', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']],
+    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': DRAW_ACTIVE, 'line-width': 2.5 } },
+  { id: 'gl-draw-line-active', type: 'line', filter: ['all', ['==', '$type', 'LineString'], ['==', 'active', 'true']],
+    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': DRAW_ACTIVE, 'line-width': 2.5 } },
+  { id: 'gl-draw-polygon-midpoint', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']],
+    paint: { 'circle-radius': 4, 'circle-color': DRAW_ACTIVE, 'circle-opacity': 0.8 } },
+  { id: 'gl-draw-vertex-halo', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], notStatic],
+    paint: { 'circle-radius': 6, 'circle-color': '#ffffff' } },
+  { id: 'gl-draw-vertex', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], notStatic],
+    paint: { 'circle-radius': 4, 'circle-color': DRAW_ACTIVE } },
+  { id: 'gl-draw-vertex-selected', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', 'active', 'true'], ['==', '$type', 'Point']],
+    paint: { 'circle-radius': 6, 'circle-color': '#e53935', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 } },
+];
+
+function makeDraw(map) {
+  if (!drawConfigured) {
+    // Mapbox GL Draw работает с MapLibre, если назвать классы элементов управления по-мэплибровски.
+    const c = MapboxDraw.constants.classes;
+    c.CANVAS = 'maplibregl-canvas';
+    c.CONTROL_BASE = 'maplibregl-ctrl';
+    c.CONTROL_PREFIX = 'maplibregl-ctrl-';
+    c.CONTROL_GROUP = 'maplibregl-ctrl-group';
+    c.ATTRIBUTION = 'maplibregl-ctrl-attrib';
+    drawConfigured = true;
+  }
+  const draw = new MapboxDraw({ displayControlsDefault: false, controls: { polygon: true, trash: true }, styles: DRAW_STYLES });
+  map.addControl(draw, 'top-left');
+  return draw;
+}
+
+function polygonParts(geometry) {
+  if (!geometry) return [];
+  return geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+}
+
+/** Контур из нарисованного: ни одного полигона — null, один — Polygon, несколько — MultiPolygon. */
+function drawnGeometry(draw) {
+  const parts = draw.getAll().features
+    .filter((f) => f.geometry.type === 'Polygon' && f.geometry.coordinates[0]?.length >= 4)
+    .map((f) => f.geometry.coordinates);
+  if (!parts.length) return null;
+  return parts.length === 1 ? { type: 'Polygon', coordinates: parts[0] } : { type: 'MultiPolygon', coordinates: parts };
+}
+
+function geometryArea(geometry) {
+  const R = 6378137;
+  const ring = (cs) => {
+    let a = 0;
+    for (let i = 0; i < cs.length - 1; i += 1) {
+      const [x1, y1] = cs[i];
+      const [x2, y2] = cs[i + 1];
+      a += ((x2 - x1) * Math.PI / 180) * (2 + Math.sin(y1 * Math.PI / 180) + Math.sin(y2 * Math.PI / 180));
+    }
+    return Math.abs((a * R * R) / 2);
+  };
+  return polygonParts(geometry).reduce((s, p) => s + ring(p[0]) - p.slice(1).reduce((h, r) => h + ring(r), 0), 0);
+}
+
+function describeGeometry(geometry) {
+  if (!geometry) return 'Контура нет — объект на карте точкой.';
+  const parts = polygonParts(geometry);
+  const vertices = parts.reduce((s, p) => s + p.reduce((v, r) => v + r.length - 1, 0), 0);
+  const m2 = geometryArea(geometry);
+  const area = m2 < 10000 ? `${fmtNum(Math.round(m2))} м²` : `${(m2 / 1e4).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} га`;
+  return `Контур: ${parts.length > 1 ? `${parts.length} ${plural(parts.length, 'часть', 'части', 'частей')}, ` : ''}${vertices} ${plural(vertices, 'вершина', 'вершины', 'вершин')}, площадь ${area}.`;
+}
+
 async function editObject(id) {
   let o = { type_id: types[0]?.id, name: '', lat: null, lon: null, attributes: {} };
+  let draw = null;
+  let polyDirty = false; // контур меняли — отправляем его на сервер
   if (id) {
     try { o = await api.get(`/api/objects/${id}`); } catch (e) { return fail(e); }
   }
@@ -586,18 +670,29 @@ async function editObject(id) {
         <label>Кадастровый номер<input name="cadastral_number" value="${esc(o.cadastral_number)}" maxlength="100" placeholder="77:01:0001001:1234"></label>
         <label>Стоимость, тыс. руб.<input name="cost" value="${o.cost ?? ''}" inputmode="decimal" placeholder="например 12500,5"></label>
         <label>Источник<input name="source" value="${esc(o.source)}"></label>
-        <label>Широта *<input name="lat" value="${o.lat ?? ''}" inputmode="decimal" required></label>
-        <label>Долгота *<input name="lon" value="${o.lon ?? ''}" inputmode="decimal" required></label>
+        <label>Широта *<input name="lat" value="${o.lat ?? ''}" inputmode="decimal"></label>
+        <label>Долгота *<input name="lon" value="${o.lon ?? ''}" inputmode="decimal"></label>
         <label>Радиус, м<input name="radius_m" value="${o.radius_m ?? ''}" inputmode="numeric" placeholder="по типу"></label>
         <label>Адрес<input name="address" value="${esc(o.address)}"></label>
       </div>
-      <p class="muted small">Щёлкните по карте, чтобы поставить точку, или перетащите маркер.</p>
-      <div class="minimap" id="objMap"></div>
+      <p class="muted small">Точка: щёлкните по карте или перетащите маркер. Контур: кнопка ⬠ слева вверху — щелчками ставьте вершины,
+        двойной щелчок завершает; щелчок по контуру — правка: тяните вершины, кружки на сторонах добавляют вершину, 🗑 удаляет выделенное.
+        Несколько контуров — мультиполигон.</p>
+      <div class="minimap minimap-tall" id="objMap"></div>
+      <div class="poly-bar"><span class="muted small" id="polyInfo"></span>
+        <button type="button" class="btn small danger" id="polyClear">Удалить контур</button></div>
       <label>Описание<textarea name="description" rows="2">${esc(o.description)}</textarea></label>
       <label>Дополнительные поля <span class="muted small">(по одному на строку: «Поле: значение»)</span>
         <textarea name="attributes" rows="3">${esc(attrsToText(o.attributes))}</textarea></label>
     </form>`, {
     wide: true,
+    // Escape во время рисования контура отменяет рисование, а не закрывает форму с правками.
+    onEscape: () => {
+      if (!draw || draw.getMode() === 'simple_select') return false;
+      if (draw.getMode() === 'draw_polygon') draw.trash(); // недорисованный контур выбрасываем
+      if (draw.getMode() !== 'simple_select') draw.changeMode('simple_select');
+      return true;
+    },
     actions: [
       ...(id ? [{
         label: 'Удалить',
@@ -630,8 +725,15 @@ async function editObject(id) {
             toast('Стоимость — число тыс. руб., не меньше 0', 'error');
             return false;
           }
-          if (body.lat === null || body.lon === null || Number.isNaN(body.lat) || Number.isNaN(body.lon)) {
-            toast('Укажите координаты числами', 'error');
+          const geometry = draw ? drawnGeometry(draw) : null;
+          if (polyDirty) body.geometry = geometry;
+          if (Number.isNaN(body.lat) || Number.isNaN(body.lon)) {
+            toast('Координаты — числа', 'error');
+            return false;
+          }
+          // Без координат можно, если есть контур: сервер поставит маркер посередине.
+          if ((body.lat === null || body.lon === null) && !(geometry || (!polyDirty && o.polygon))) {
+            toast('Укажите координаты или нарисуйте контур', 'error');
             return false;
           }
           if (id) await api.put(`/api/objects/${id}`, body);
@@ -660,7 +762,31 @@ async function editObject(id) {
     form.lon.value = lng.toFixed(6);
   };
   if (has) marker.setLngLat([o.lon, o.lat]).addTo(map);
-  map.on('click', (e) => place(e.lngLat.lng, e.lngLat.lat));
+
+  draw = makeDraw(map);
+  for (const coords of polygonParts(o.geometry)) draw.add({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: coords } });
+  if (o.geometry) {
+    const b = new maplibregl.LngLatBounds();
+    polygonParts(o.geometry).forEach((p) => p[0].forEach((pt) => b.extend(pt)));
+    map.fitBounds(b, { padding: 40, duration: 0, maxZoom: 17 });
+  }
+  const info = dlg.querySelector('#polyInfo');
+  const showInfo = () => { info.textContent = describeGeometry(drawnGeometry(draw)); };
+  showInfo();
+  for (const ev of ['draw.create', 'draw.update', 'draw.delete']) {
+    map.on(ev, () => { polyDirty = true; showInfo(); });
+  }
+  dlg.querySelector('#polyClear').addEventListener('click', () => {
+    if (!draw.getAll().features.length) return;
+    draw.deleteAll();
+    polyDirty = true;
+    showInfo();
+  });
+  // Щелчок ставит маркер, только когда не идёт рисование и под курсором нет контура.
+  map.on('click', (e) => {
+    if (draw.getMode() !== 'simple_select' || draw.getFeatureIdsAt(e.point).length || draw.getSelectedIds().length) return;
+    place(e.lngLat.lng, e.lngLat.lat);
+  });
   marker.on('dragend', () => { const p = marker.getLngLat(); place(p.lng, p.lat); });
   form.type_id.addEventListener('change', setIcon);
   const sync = () => {
