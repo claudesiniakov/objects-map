@@ -323,6 +323,30 @@ function closeCard() {
   $('card').hidden = true;
 }
 
+const COPY_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>';
+const DONE_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>';
+
+/** Значение моноширинным шрифтом и кнопка-иконка «копировать» рядом. */
+function copyable(shown, value) {
+  return `<span class="copyable"><span class="mono">${shown}</span><button type="button" class="copy-btn" data-copy="${esc(value)}" title="Копировать" aria-label="Копировать">${COPY_ICON}</button></span>`;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Страница с диска или без HTTPS: Clipboard API может быть недоступен — запасной путь через выделение.
+    const ta = Object.assign(document.createElement('textarea'), { value: text });
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.append(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  }
+}
+
 function cardHtml(o, icon) {
   const radius = o.effective_radius_m
     ? `${fmtNum(o.effective_radius_m)} м${o.radius_m ? '' : ' <span class="muted">(по типу)</span>'}`
@@ -336,9 +360,9 @@ function cardHtml(o, icon) {
     <table class="kv">
       ${row('ID', esc(o.external_id))}
       ${row('Номер договора', esc(o.contract_number))}
-      ${row('Кадастровый номер', o.cadastral_number ? `<span class="mono">${esc(o.cadastral_number)}</span> <button class="link-btn" data-copy="${esc(o.cadastral_number)}">копировать</button>` : '')}
+      ${row('Кадастровый номер', o.cadastral_number ? copyable(esc(o.cadastral_number), o.cadastral_number) : '')}
       ${row('Адрес', esc(o.address))}
-      ${row('Координаты', `<span class="mono">${o.lat.toFixed(6)}, ${o.lon.toFixed(6)}</span> <button class="link-btn" data-copy="${o.lat}, ${o.lon}">копировать</button>`)}
+      ${row('Координаты', copyable(`${o.lat.toFixed(6)}, ${o.lon.toFixed(6)}`, `${o.lat}, ${o.lon}`))}
       ${row('Радиус', radius)}
       ${row('Описание', esc(o.description).replace(/\n/g, '<br>'))}
       ${attrs}
@@ -472,9 +496,12 @@ async function openCard(id, at) {
     box.querySelector('[data-zoom]').addEventListener('click', () => {
       map.flyTo({ center: [o.lon, o.lat], zoom: Math.max(map.getZoom(), 16) });
     });
-    box.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', (e) => {
-      navigator.clipboard?.writeText(e.target.dataset.copy);
-      e.target.textContent = 'скопировано';
+    box.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
+      const ok = await copyText(b.dataset.copy);
+      b.innerHTML = ok ? DONE_ICON : COPY_ICON;
+      b.classList.toggle('copied', ok);
+      b.title = ok ? 'Скопировано' : 'Не удалось скопировать';
+      setTimeout(() => { b.innerHTML = COPY_ICON; b.classList.remove('copied'); b.title = 'Копировать'; }, 1500);
     }));
     setupComments(box, o);
     if (!inPanel) {
