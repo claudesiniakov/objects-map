@@ -3,6 +3,7 @@ import { markerCanvas, markerDataUrl } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
 const EMPTY = { type: 'FeatureCollection', features: [] };
+const NONE = '__none__'; // значение фильтра «не заполнено»
 const MIN_ZONE_PX = 10;
 
 const state = {
@@ -14,6 +15,8 @@ const state = {
   visible: new Set(),
   zones: true,
   source: '',
+  attrNames: [], // поля из настройки filter_attributes
+  attrs: [], // выбранное значение по каждому полю: '' — все, NONE — не заполнено
 };
 
 let map;
@@ -32,6 +35,8 @@ function readHash() {
   if (p.has('types')) out.types = p.get('types').split(',').filter(Boolean).map(Number);
   if (p.has('zones')) out.zones = p.get('zones') !== '0';
   if (p.has('source')) out.source = p.get('source');
+  out.attrs = {};
+  for (const [k, v] of p) if (k.startsWith('a.')) out.attrs[k.slice(2)] = v === '-' ? NONE : v;
   return out;
 }
 
@@ -43,15 +48,31 @@ function writeHash() {
   if (state.visible.size !== state.types.length) p.set('types', [...state.visible].join(','));
   if (!state.zones) p.set('zones', '0');
   if (state.source) p.set('source', state.source);
+  state.attrNames.forEach((name, i) => { if (state.attrs[i]) p.set(`a.${name}`, state.attrs[i] === NONE ? '-' : state.attrs[i]); });
   history.replaceState(null, '', `#${p.toString().replace(/%2F/g, '/').replace(/%2C/g, ',')}`);
 }
 
 // ---------------------------------------------------------------- данные и фильтры
 
+// Фильтры помимо типа: источник и дополнительные поля.
+function passesExtra(f) {
+  if (state.source && f.properties.s !== state.source) return false;
+  for (let i = 0; i < state.attrs.length; i += 1) {
+    const want = state.attrs[i];
+    if (!want) continue;
+    const have = f.properties.a?.[i] ?? null;
+    if (want === NONE ? have !== null : have !== want) return false;
+  }
+  return true;
+}
+
+function hasExtraFilters() {
+  return Boolean(state.source) || state.attrs.some(Boolean);
+}
+
 function applyFilter() {
-  state.filtered = state.all.features.filter(
-    (f) => state.visible.has(f.properties.t) && (!state.source || f.properties.s === state.source),
-  );
+  state.filtered = state.all.features.filter((f) => state.visible.has(f.properties.t) && passesExtra(f));
+  $('resetFilters').hidden = !hasExtraFilters();
   clearClusterMarkers();
   clearSpider();
   map.getSource('objects')?.setData({ type: 'FeatureCollection', features: state.filtered });
@@ -67,7 +88,7 @@ async function loadObjects() {
 function renderLegend() {
   const counts = new Map();
   for (const f of state.all.features) {
-    if (state.source && f.properties.s !== state.source) continue;
+    if (!passesExtra(f)) continue;
     counts.set(f.properties.t, (counts.get(f.properties.t) || 0) + 1);
   }
   const legend = $('legend');
@@ -346,14 +367,39 @@ function setupSearch() {
       state.visible.add(typeId);
       applyFilter();
     }
-    if (state.source) {
-      state.source = '';
-      $('sourceSelect').value = '';
-      applyFilter();
-    }
+    if (hasExtraFilters()) resetFilters();
     map.flyTo({ center: [Number(b.dataset.lon), Number(b.dataset.lat)], zoom: Math.max(17, map.getZoom()) });
     openCard(Number(b.dataset.id));
   });
+}
+
+// ---------------------------------------------------------------- фильтры по полям
+
+async function renderAttrFilters() {
+  const lists = await Promise.all(
+    state.attrNames.map((name) => api.get(`/api/attribute-values?name=${encodeURIComponent(name)}`)),
+  );
+  $('attrFilters').innerHTML = state.attrNames.map((name, i) => {
+    const values = lists[i];
+    const empty = values.find((v) => v.value === null);
+    const current = state.attrs[i];
+    const known = !current || current === NONE || values.some((v) => v.value === current);
+    return `<label>${esc(name)}<select data-attr="${i}">
+      <option value="">Все</option>
+      ${values.filter((v) => v.value !== null).map((v) => `<option value="${esc(v.value)}">${esc(v.value)} (${fmtNum(v.objects)})</option>`).join('')}
+      ${empty ? `<option value="${NONE}">— не заполнено (${fmtNum(empty.objects)})</option>` : ''}
+      ${known ? '' : `<option value="${esc(current)}">${esc(current)} (0)</option>`}
+    </select></label>`;
+  }).join('');
+  $('attrFilters').querySelectorAll('select').forEach((s) => { s.value = state.attrs[Number(s.dataset.attr)]; });
+}
+
+function resetFilters() {
+  state.source = '';
+  $('sourceSelect').value = '';
+  state.attrs = state.attrNames.map(() => '');
+  $('attrFilters').querySelectorAll('select').forEach((s) => { s.value = ''; });
+  applyFilter();
 }
 
 // ---------------------------------------------------------------- инициализация
@@ -385,6 +431,9 @@ async function init() {
   $('sourceSelect').insertAdjacentHTML('beforeend',
     sources.map((s) => `<option value="${esc(s.source)}">${esc(s.source)} (${fmtNum(s.objects)})</option>`).join(''));
   $('sourceSelect').value = state.source;
+  state.attrNames = settings.filter_attributes || [];
+  state.attrs = state.attrNames.map((name) => fromHash.attrs[name] ?? '');
+  await renderAttrFilters();
 
   map = new maplibregl.Map({
     container: 'map',
@@ -504,6 +553,11 @@ async function init() {
   $('noTypes').addEventListener('click', () => { state.visible = new Set(); applyFilter(); });
   $('zonesToggle').addEventListener('change', (e) => { state.zones = e.target.checked; updateZones(); writeHash(); });
   $('sourceSelect').addEventListener('change', (e) => { state.source = e.target.value; applyFilter(); });
+  $('attrFilters').addEventListener('change', (e) => {
+    state.attrs[Number(e.target.dataset.attr)] = e.target.value;
+    applyFilter();
+  });
+  $('resetFilters').addEventListener('click', resetFilters);
   $('fitAll').addEventListener('click', fitAll);
   $('cardClose').addEventListener('click', () => { $('card').hidden = true; });
   $('panelToggle').addEventListener('click', () => document.body.classList.toggle('panel-open'));
@@ -516,6 +570,7 @@ async function init() {
     loadedAt = Date.now();
     try {
       await loadObjects();
+      await renderAttrFilters();
       applyFilter();
     } catch (e) {
       fail(e);

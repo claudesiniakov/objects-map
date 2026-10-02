@@ -111,6 +111,7 @@ DEFAULT_SETTINGS = {
     "zoom": 10,
     "cluster_radius": 60,
     "cluster_max_zoom": 16,
+    "filter_attributes": ["Ответственный"],
 }
 
 OBJECT_COLUMNS = (

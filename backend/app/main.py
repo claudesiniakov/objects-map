@@ -99,6 +99,17 @@ class SettingsIn(BaseModel):
     zoom: float = Field(ge=0, le=20)
     cluster_radius: int = Field(ge=10, le=200)
     cluster_max_zoom: int = Field(ge=5, le=20)
+    filter_attributes: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("filter_attributes")
+    @classmethod
+    def _attrs(cls, v):
+        out = []
+        for name in v:
+            name = name.strip()
+            if name and name not in out:
+                out.append(name[:100])
+        return out
 
 
 @app.get("/api/settings")
@@ -112,6 +123,7 @@ def write_settings(body: SettingsIn, user=Depends(require("admin")), db=Depends(
         for k, v in body.model_dump().items():
             db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, json.dumps(v)))
         audit(db, user, "update", "settings", None, body.model_dump())
+    DataVersion.bump()
     return get_settings(db)
 
 
@@ -281,11 +293,14 @@ def map_objects(
     user=Depends(current_user),
     db=Depends(get_db),
 ):
-    """Объекты в формате GeoJSON (компактные свойства: id, t — тип, n — название, r — радиус, s — источник)."""
+    """Объекты в формате GeoJSON. Компактные свойства: id, t — тип, n — название, r — радиус, s — источник,
+    a — значения полей из настройки filter_attributes (в том же порядке)."""
     key = (DataVersion.value, bbox, types, source)
     cached = _map_cache.get(key)
     if cached is None:
-        where, params = [], []
+        attrs = get_settings(db)["filter_attributes"]
+        attr_sql = "".join(f", json_extract(o.attributes, ?) AS a{i}" for i in range(len(attrs)))
+        where, params = [], [attr_path(a) for a in attrs]
         if bbox:
             try:
                 x1, y1, x2, y2 = (float(v) for v in bbox.split(","))
@@ -300,21 +315,50 @@ def map_objects(
         if source:
             where.append("o.source = ?")
             params.append(source)
-        sql = (f"SELECT o.id, o.type_id, o.name, o.lat, o.lon, o.source, {effective_radius_sql()} AS r"
+        sql = (f"SELECT o.id, o.type_id, o.name, o.lat, o.lon, o.source, {effective_radius_sql()} AS r{attr_sql}"
                " FROM map_object o JOIN object_type t ON t.id = o.type_id")
         if where:
             sql += " WHERE " + " AND ".join(where)
-        feats = [
-            {"type": "Feature", "geometry": {"type": "Point", "coordinates": [r[4], r[3]]},
-             "properties": {"id": r[0], "t": r[1], "n": r[2], "s": r[5], "r": r[6]}}
-            for r in db.execute(sql, params)
-        ]
+        feats = []
+        for r in db.execute(sql, params):
+            props = {"id": r[0], "t": r[1], "n": r[2], "s": r[5], "r": r[6]}
+            if attrs:
+                props["a"] = [attr_text(v) for v in r[7:]]
+            feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [r[4], r[3]]},
+                          "properties": props})
         cached = json.dumps({"type": "FeatureCollection", "features": feats}, ensure_ascii=False,
                             separators=(",", ":")).encode()
         if len(_map_cache) > 20:
             _map_cache.clear()
         _map_cache[key] = cached
     return Response(cached, media_type="application/json", headers={"Cache-Control": "no-cache"})
+
+
+def attr_path(name: str) -> str:
+    """JSON-путь SQLite к ключу attributes; имя ключа — произвольный заголовок колонки Excel."""
+    return '$."' + name.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def attr_text(v):
+    if v is None:
+        return None
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return str(v)
+
+
+@app.get("/api/attribute-values")
+def attribute_values(name: str = Query(min_length=1), user=Depends(current_user), db=Depends(get_db)):
+    """Значения поля attributes с числом объектов — для выпадающих списков фильтров."""
+    rows = db.execute(
+        "SELECT json_extract(attributes, ?) AS v, COUNT(*) AS n FROM map_object GROUP BY v ORDER BY v",
+        (attr_path(name),),
+    ).fetchall()
+    out = {}
+    for r in rows:
+        key = attr_text(r["v"])
+        out[key] = out.get(key, 0) + r["n"]
+    return [{"value": k, "objects": n} for k, n in out.items()]
 
 
 def object_dict(row) -> dict:
@@ -409,8 +453,28 @@ SORTABLE = {"id": "o.id", "name": "o.name", "type": "t.name", "external_id": "o.
             "updated_at": "o.updated_at", "source": "o.source", "radius_m": "o.radius_m"}
 
 
-def _object_filter(q, type_id, source, import_id):
+def _parse_attrs(attrs: str | None) -> dict:
+    if not attrs:
+        return {}
+    try:
+        data = json.loads(attrs)
+    except ValueError:
+        raise HTTPException(422, "attrs: ожидается JSON-объект {поле: значение}")
+    if not isinstance(data, dict):
+        raise HTTPException(422, "attrs: ожидается JSON-объект {поле: значение}")
+    return {str(k): v for k, v in data.items()}
+
+
+def _object_filter(q, type_id, source, import_id, attrs: dict | None = None):
     where, params = [], []
+    for name, value in (attrs or {}).items():
+        if value is None:
+            where.append("json_extract(o.attributes, ?) IS NULL")
+            params.append(attr_path(name))
+        else:
+            # Число в Excel сохраняется как число — сравниваем по тексту, как оно показано в фильтре.
+            where.append("CAST(json_extract(o.attributes, ?) AS TEXT) = ?")
+            params += [attr_path(name), str(value)]
     if q:
         where.append("o.search_text LIKE ?")
         params.append(f"%{q.strip().lower()}%")
@@ -432,6 +496,7 @@ def admin_objects(
     type_id: int | None = None,
     source: str | None = None,
     import_id: int | None = None,
+    attrs: str | None = Query(None, description='JSON {"поле": "значение"}, null — поле не заполнено'),
     sort: str = "id",
     order: str = "desc",
     page: int = Query(1, ge=1),
@@ -439,7 +504,7 @@ def admin_objects(
     user=Depends(require("operator")),
     db=Depends(get_db),
 ):
-    where, params = _object_filter(q, type_id, source, import_id)
+    where, params = _object_filter(q, type_id, source, import_id, _parse_attrs(attrs))
     total = db.execute(
         "SELECT COUNT(*) FROM map_object o JOIN object_type t ON t.id = o.type_id" + where, params
     ).fetchone()[0]
@@ -524,10 +589,11 @@ def export(
     types: str | None = None,
     source: str | None = None,
     import_id: int | None = None,
+    attrs: str | None = Query(None, description='JSON {"поле": "значение"}, null — поле не заполнено'),
     user=Depends(require("operator")),
     db=Depends(get_db),
 ):
-    where, params = _object_filter(q, type_id, source, import_id)
+    where, params = _object_filter(q, type_id, source, import_id, _parse_attrs(attrs))
     if types:
         ids = [int(v) for v in types.split(",") if v.strip().isdigit()]
         where += (" AND " if where else " WHERE ") + f"o.type_id IN ({','.join('?' * len(ids)) or 'NULL'})"

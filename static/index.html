@@ -36,8 +36,14 @@
       <label class="check"><input type="checkbox" id="zonesToggle" checked> Зоны (радиусы)</label>
     </section>
     <section>
-      <h2>Источник</h2>
-      <select id="sourceSelect"><option value="">Все источники</option></select>
+      <div class="section-head">
+        <h2>Фильтры</h2>
+        <button class="link-btn small" id="resetFilters" hidden>сбросить</button>
+      </div>
+      <div class="filter-list">
+        <label>Источник<select id="sourceSelect"><option value="">Все источники</option></select></label>
+        <div id="attrFilters" class="filter-list"></div>
+      </div>
     </section>
     <section class="panel-actions">
       <button class="btn" id="fitAll">Показать все объекты</button>

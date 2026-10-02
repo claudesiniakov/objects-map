@@ -388,10 +388,21 @@ async function renderPreview(up, body, pv, recheck) {
 
 // ================================================================ ОБЪЕКТЫ
 
-const objState = { q: '', type_id: '', source: '', sort: 'id', order: 'desc', page: 1, selected: new Set() };
+const objState = { q: '', type_id: '', source: '', attrs: {}, sort: 'id', order: 'desc', page: 1, selected: new Set() };
+const ATTR_NONE = '__none__'; // значение фильтра «не заполнено»
+
+// Фильтры по дополнительным полям → параметр attrs={"поле": "значение" | null}.
+function attrsParam(p) {
+  const active = Object.entries(objState.attrs).filter(([, v]) => v);
+  if (active.length) p.set('attrs', JSON.stringify(Object.fromEntries(active.map(([k, v]) => [k, v === ATTR_NONE ? null : v]))));
+}
 
 async function renderObjects(editId) {
-  const sources = await api.get('/api/sources');
+  settingsCache = null;
+  const [sources, s] = await Promise.all([api.get('/api/sources'), settings()]);
+  const attrNames = s.filter_attributes || [];
+  const attrValues = await Promise.all(attrNames.map((n) => api.get(`/api/attribute-values?name=${encodeURIComponent(n)}`)));
+  for (const k of Object.keys(objState.attrs)) if (!attrNames.includes(k)) delete objState.attrs[k];
   view.innerHTML = `
     <section class="panel">
       <div class="panel-head">
@@ -405,7 +416,12 @@ async function renderObjects(editId) {
         <input type="search" id="fQ" placeholder="Поиск: название, адрес, ID" value="${esc(objState.q)}">
         <select id="fType">${typeOptions(objState.type_id, { empty: 'Все типы' })}</select>
         <select id="fSource"><option value="">Все источники</option>
-          ${sources.map((s) => `<option value="${esc(s.source)}" ${s.source === objState.source ? 'selected' : ''}>${esc(s.source)} (${fmtNum(s.objects)})</option>`).join('')}</select>
+          ${sources.map((src) => `<option value="${esc(src.source)}" ${src.source === objState.source ? 'selected' : ''}>${esc(src.source)} (${fmtNum(src.objects)})</option>`).join('')}</select>
+        ${attrNames.map((name, i) => `<select data-attr="${esc(name)}" title="${esc(name)}">
+          <option value="">${esc(name)}: все</option>
+          ${attrValues[i].filter((v) => v.value !== null).map((v) => `<option value="${esc(v.value)}">${esc(v.value)} (${fmtNum(v.objects)})</option>`).join('')}
+          ${attrValues[i].some((v) => v.value === null) ? `<option value="${ATTR_NONE}">${esc(name)}: не заполнено (${fmtNum(attrValues[i].find((v) => v.value === null).objects)})</option>` : ''}
+        </select>`).join('')}
       </div>
       <div class="bulkbar" id="bulkbar" hidden>
         <span id="selCount"></span>
@@ -421,12 +437,17 @@ async function renderObjects(editId) {
   document.getElementById('fQ').addEventListener('input', debounce((e) => { objState.q = e.target.value; reload(); }, 300));
   document.getElementById('fType').addEventListener('change', (e) => { objState.type_id = e.target.value; reload(); });
   document.getElementById('fSource').addEventListener('change', (e) => { objState.source = e.target.value; reload(); });
+  view.querySelectorAll('select[data-attr]').forEach((sel) => {
+    sel.value = objState.attrs[sel.dataset.attr] || '';
+    sel.addEventListener('change', () => { objState.attrs[sel.dataset.attr] = sel.value; reload(); });
+  });
   document.getElementById('addObj').addEventListener('click', () => editObject(null));
   document.getElementById('exportBtn').addEventListener('click', () => {
     const p = new URLSearchParams();
     if (objState.q) p.set('q', objState.q);
     if (objState.type_id) p.set('type_id', objState.type_id);
     if (objState.source) p.set('source', objState.source);
+    attrsParam(p);
     download(`/api/export?${p}`, 'objects.xlsx').catch(fail);
   });
   document.getElementById('bulkClear').addEventListener('click', () => { objState.selected.clear(); loadObjectsTable(); });
@@ -459,16 +480,22 @@ const OBJ_COLUMNS = [
   ['radius_m', 'Радиус, м'], ['source', 'Источник'], ['updated_at', 'Обновлён'],
 ];
 
+let objRequestSeq = 0;
+
 async function loadObjectsTable() {
   const box = document.getElementById('objTable');
   if (!box) return;
+  // Ответы могут прийти не по порядку — рисуем только ответ на последний запрос.
+  const seq = ++objRequestSeq;
   const p = new URLSearchParams({ sort: objState.sort, order: objState.order, page: objState.page, page_size: 50 });
   if (objState.q) p.set('q', objState.q);
   if (objState.type_id) p.set('type_id', objState.type_id);
   if (objState.source) p.set('source', objState.source);
+  attrsParam(p);
   try {
     const { total, items } = await api.get(`/api/admin/objects?${p}`);
     const icons = await Promise.all(items.map((o) => (typeById.get(o.type_id) ? markerDataUrl(typeById.get(o.type_id)) : '')));
+    if (seq !== objRequestSeq) return;
     box.innerHTML = items.length ? `<table class="table hover">
       <thead><tr><th><input type="checkbox" id="selAll" aria-label="Выбрать все на странице"></th>
         ${OBJ_COLUMNS.map(([k, label]) => (k
@@ -871,6 +898,8 @@ async function renderSettings() {
           <label>Радиус объединения в кластер, px<input name="cluster_radius" type="number" min="10" max="200" value="${s.cluster_radius}" required></label>
           <label>Кластеризация до масштаба<input name="cluster_max_zoom" type="number" min="5" max="20" value="${s.cluster_max_zoom}" required>
             <span class="muted small">Начиная со следующего масштаба маркеры не объединяются</span></label>
+          <label>Поля для фильтров<input name="filter_attributes" value="${esc((s.filter_attributes || []).join(', '))}" placeholder="Ответственный, Регион">
+            <span class="muted small">Названия колонок Excel через запятую, до 5 — по ним появятся фильтры на карте и в «Объектах»</span></label>
         </div>
         <p class="muted small">Подвиньте карту в нужное место и нажмите «Взять с карты».</p>
         <div class="minimap" id="setMap"></div>
@@ -895,6 +924,7 @@ async function renderSettings() {
       settingsCache = await api.put('/api/settings', {
         center_lat: n('center_lat'), center_lon: n('center_lon'), zoom: n('zoom'),
         cluster_radius: n('cluster_radius'), cluster_max_zoom: n('cluster_max_zoom'),
+        filter_attributes: form.filter_attributes.value.split(',').map((x) => x.trim()).filter(Boolean),
       });
       toast('Настройки сохранены', 'success');
     } catch (ex) { fail(ex); }
