@@ -375,6 +375,21 @@ OBJECT_SELECT = (
 )
 
 
+class DetailsIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200_000)
+
+
+@app.post("/api/objects/details")
+def objects_details(body: DetailsIn, user=Depends(current_user), db=Depends(get_db)):
+    """Полные данные объектов по списку id — для выгрузки карты в HTML."""
+    out = []
+    for i in range(0, len(body.ids), 900):
+        part = body.ids[i:i + 900]
+        out += [object_dict(r) for r in db.execute(OBJECT_SELECT + f" WHERE o.id IN ({','.join('?' * len(part))})", part)]
+    audit(db, user, "export_html", "map_object", None, {"objects": len(out)})
+    return out
+
+
 @app.get("/api/objects/{object_id}")
 def get_object(object_id: int, user=Depends(current_user), db=Depends(get_db)):
     return object_dict(row_or_404(db, OBJECT_SELECT + " WHERE o.id = ?", (object_id,)))

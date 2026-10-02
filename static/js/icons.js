@@ -54,7 +54,7 @@ function pinPath(ctx) {
 
 /** Холст 60×80 (pixelRatio 2) с маркером типа. */
 export async function markerCanvas(type) {
-  const key = `${type.icon}|${type.color}`;
+  const key = `${type.icon}|${type.color}|${type.icon_data ? 'data' : ''}`;
   if (imageCache.has(key)) return imageCache.get(key);
   const promise = (async () => {
     const canvas = document.createElement('canvas');
@@ -72,7 +72,8 @@ export async function markerCanvas(type) {
     ctx.lineWidth = 2;
     ctx.strokeStyle = '#ffffff';
     ctx.stroke();
-    const url = iconUrl(type.icon);
+    // icon_data — иконка, встроенная в скачанную HTML-страницу (там нет сервера с файлами иконок).
+    const url = type.icon_data || iconUrl(type.icon);
     if (url) {
       try {
         const img = await loadImage(url);

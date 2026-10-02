@@ -935,7 +935,7 @@ async function renderSettings() {
 
 const AUDIT_ACTION = {
   login: 'Вход', password: 'Смена пароля', create: 'Создание', update: 'Изменение', delete: 'Удаление',
-  bulk_delete: 'Массовое удаление', bulk_type: 'Массовая смена типа', import: 'Импорт', rollback: 'Откат импорта', upload: 'Загрузка',
+  bulk_delete: 'Массовое удаление', export_html: 'Выгрузка карты в HTML', bulk_type: 'Массовая смена типа', import: 'Импорт', rollback: 'Откат импорта', upload: 'Загрузка',
 };
 const AUDIT_ENTITY = {
   user: 'Пользователь', map_object: 'Объект', object_type: 'Тип', import_batch: 'Импорт', settings: 'Настройки', icon: 'Иконка',

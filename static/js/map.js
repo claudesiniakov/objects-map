@@ -1,10 +1,13 @@
-import { api, can, debounce, ensureLogin, esc, fail, fmtDate, fmtNum, logout } from './api.js';
+import { can, debounce, esc, fail, fmtDate, fmtNum, logout } from './api.js';
+import { createProvider } from './data.js';
+import { downloadSnapshot } from './download.js';
 import { markerCanvas, markerDataUrl } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
 const EMPTY = { type: 'FeatureCollection', features: [] };
 const NONE = '__none__'; // значение фильтра «не заполнено»
 const MIN_ZONE_PX = 10;
+const data = createProvider();
 
 const state = {
   settings: null,
@@ -82,7 +85,7 @@ function applyFilter() {
 }
 
 async function loadObjects() {
-  state.all = await api.get('/api/objects');
+  state.all = await data.objects();
 }
 
 function renderLegend() {
@@ -294,7 +297,7 @@ async function openCard(id) {
   card.hidden = false;
   body.innerHTML = '<p class="muted">Загрузка…</p>';
   try {
-    const o = await api.get(`/api/objects/${id}`);
+    const o = await data.object(id);
     const t = state.typeById.get(o.type_id);
     const icon = t ? await markerDataUrl(t) : '';
     const radius = o.effective_radius_m
@@ -319,7 +322,7 @@ async function openCard(id) {
       </table>
       <div class="card-actions">
         <button class="btn" data-zoom>Приблизить</button>
-        ${can('operator') ? `<a class="btn" href="/admin#objects/${o.id}">Редактировать</a>` : ''}
+        ${data.mode === 'live' && can('operator') ? `<a class="btn" href="/admin#objects/${o.id}">Редактировать</a>` : ''}
       </div>`;
     body.querySelector('[data-zoom]').addEventListener('click', () => {
       map.flyTo({ center: [o.lon, o.lat], zoom: Math.max(map.getZoom(), 16) });
@@ -345,7 +348,7 @@ function setupSearch() {
       return;
     }
     try {
-      const items = await api.get(`/api/search?q=${encodeURIComponent(q)}`);
+      const items = await data.search(q);
       list.innerHTML = items.length
         ? items.map((o) => `<li><button data-id="${o.id}" data-lon="${o.lon}" data-lat="${o.lat}" data-type="${o.type_id}">
             <b>${esc(o.name)}</b><span class="muted small">${esc(o.type_name)}${o.address ? ` · ${esc(o.address)}` : ''}</span></button></li>`).join('')
@@ -377,7 +380,7 @@ function setupSearch() {
 
 async function renderAttrFilters() {
   const lists = await Promise.all(
-    state.attrNames.map((name) => api.get(`/api/attribute-values?name=${encodeURIComponent(name)}`)),
+    state.attrNames.map((name) => data.attributeValues(name)),
   );
   $('attrFilters').innerHTML = state.attrNames.map((name, i) => {
     const values = lists[i];
@@ -411,20 +414,42 @@ function fitAll() {
   map.fitBounds(b, { padding: 60, maxZoom: 16, duration: 600 });
 }
 
-async function init() {
-  const user = await ensureLogin();
-  $('userName').textContent = user.full_name || user.login;
-  $('adminLink').hidden = !can('operator');
-  $('logoutBtn').addEventListener('click', logout);
+function setupHeader(user) {
+  if (data.mode === 'live') {
+    $('userName').textContent = user.full_name || user.login;
+    $('adminLink').hidden = !can('operator');
+    $('logoutBtn').addEventListener('click', logout);
+    return;
+  }
+  // Скачанная страница: без входа, панели управления и повторной выгрузки.
+  const m = data.meta;
+  $('adminLink').hidden = true;
+  $('logoutBtn').hidden = true;
+  $('downloadBtn').hidden = true;
+  $('userName').hidden = true;
+  const info = $('snapshotInfo');
+  info.hidden = false;
+  info.textContent = `Выгрузка от ${fmtDate(m.created_at)}`;
+  info.title = [
+    m.created_by && `Выгрузил: ${m.created_by}`,
+    m.filters ? `Фильтры при выгрузке — ${m.filters}` : 'Без фильтров',
+    `Источник: ${m.origin}`,
+  ].filter(Boolean).join('\n');
+}
 
-  const [settings, types, sources] = await Promise.all([
-    api.get('/api/settings'), api.get('/api/types'), api.get('/api/sources'),
-  ]);
+async function init() {
+  const user = await data.init();
+  setupHeader(user);
+
+  const [settings, types, sources] = await Promise.all([data.settings(), data.types(), data.sources()]);
   state.settings = settings;
   state.types = types;
   state.typeById = new Map(types.map((t) => [t.id, t]));
   const fromHash = readHash();
-  state.visible = new Set(fromHash.types ?? types.filter((t) => t.visible_default).map((t) => t.id));
+  // В выгрузке видны все типы: в неё попали только объекты, видимые в момент скачивания.
+  const defaultTypes = data.mode === 'snapshot' ? types : types.filter((t) => t.visible_default);
+  state.visible = new Set(fromHash.types ?? defaultTypes.map((t) => t.id));
+  const startView = fromHash.view ?? data.meta?.view;
   state.zones = fromHash.zones ?? true;
   state.source = fromHash.source ?? '';
   $('zonesToggle').checked = state.zones;
@@ -450,8 +475,8 @@ async function init() {
       },
       layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
     },
-    center: fromHash.view?.center ?? [settings.center_lon, settings.center_lat],
-    zoom: fromHash.view?.zoom ?? settings.zoom,
+    center: startView?.center ?? [settings.center_lon, settings.center_lat],
+    zoom: startView?.zoom ?? settings.zoom,
     maxZoom: 19,
     dragRotate: false,
     pitchWithRotate: false,
@@ -540,7 +565,7 @@ async function init() {
   });
 
   applyFilter();
-  if (!fromHash.view && state.filtered.length) fitAll();
+  if (!startView && state.filtered.length) fitAll();
   $('loading').hidden = true;
 
   $('legend').addEventListener('change', (e) => {
@@ -559,10 +584,12 @@ async function init() {
   });
   $('resetFilters').addEventListener('click', resetFilters);
   $('fitAll').addEventListener('click', fitAll);
+  $('downloadBtn').addEventListener('click', (e) => downloadSnapshot(map, state, e.currentTarget));
   $('cardClose').addEventListener('click', () => { $('card').hidden = true; });
   $('panelToggle').addEventListener('click', () => document.body.classList.toggle('panel-open'));
   setupSearch();
 
+  if (data.mode !== 'live') return;
   // Данные могли обновиться в панели управления — перечитываем при возврате на вкладку.
   let loadedAt = Date.now();
   document.addEventListener('visibilitychange', async () => {
