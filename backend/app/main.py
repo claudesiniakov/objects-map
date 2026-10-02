@@ -527,6 +527,78 @@ def geocode(q: str = Query(min_length=3, max_length=300), viewbox: str | None = 
     return result
 
 
+# ---------------------------------------------------------------- личные метки
+
+
+class PinIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    address: str | None = Field(default=None, max_length=1000)
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    color: str = "#7b1fa2"
+    radius_m: int = Field(default=0, ge=0, le=MAX_RADIUS_M)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("Пустое название")
+        return v
+
+    @field_validator("color")
+    @classmethod
+    def _color(cls, v):
+        if not COLOR_RE.match(v):
+            raise ValueError("Цвет в формате #RRGGBB")
+        return v.lower()
+
+
+PIN_FIELDS = ("id", "name", "address", "lat", "lon", "color", "radius_m", "created_at", "updated_at")
+
+
+def _own_pin(db, pin_id, user):
+    row = db.execute("SELECT * FROM user_pin WHERE id = ? AND user_id = ?", (pin_id, user["id"])).fetchone()
+    if not row:
+        raise HTTPException(404, "Метка не найдена")
+    return row
+
+
+@app.get("/api/pins")
+def list_pins(user=Depends(current_user), db=Depends(get_db)):
+    rows = db.execute("SELECT * FROM user_pin WHERE user_id = ? ORDER BY name COLLATE NOCASE, id", (user["id"],)).fetchall()
+    return [{k: r[k] for k in PIN_FIELDS} for r in rows]
+
+
+@app.post("/api/pins")
+def create_pin(body: PinIn, user=Depends(current_user), db=Depends(get_db)):
+    if db.execute("SELECT COUNT(*) FROM user_pin WHERE user_id = ?", (user["id"],)).fetchone()[0] >= 500:
+        raise HTTPException(409, "Не больше 500 меток на пользователя — удалите ненужные")
+    ts = now()
+    cur = db.execute(
+        "INSERT INTO user_pin (user_id, name, address, lat, lon, color, radius_m, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (user["id"], body.name, body.address, body.lat, body.lon, body.color, body.radius_m, ts, ts),
+    )
+    return {k: v for k, v in zip(PIN_FIELDS, db.execute(f"SELECT {', '.join(PIN_FIELDS)} FROM user_pin WHERE id = ?", (cur.lastrowid,)).fetchone())}
+
+
+@app.put("/api/pins/{pin_id}")
+def update_pin(pin_id: int, body: PinIn, user=Depends(current_user), db=Depends(get_db)):
+    _own_pin(db, pin_id, user)
+    db.execute(
+        "UPDATE user_pin SET name=?, address=?, lat=?, lon=?, color=?, radius_m=?, updated_at=? WHERE id=?",
+        (body.name, body.address, body.lat, body.lon, body.color, body.radius_m, now(), pin_id),
+    )
+    return {k: v for k, v in zip(PIN_FIELDS, db.execute(f"SELECT {', '.join(PIN_FIELDS)} FROM user_pin WHERE id = ?", (pin_id,)).fetchone())}
+
+
+@app.delete("/api/pins/{pin_id}")
+def delete_pin(pin_id: int, user=Depends(current_user), db=Depends(get_db)):
+    _own_pin(db, pin_id, user)
+    db.execute("DELETE FROM user_pin WHERE id = ?", (pin_id,))
+    return {"ok": True}
+
+
 @app.get("/api/sources")
 def sources(user=Depends(current_user), db=Depends(get_db)):
     rows = db.execute(
@@ -983,6 +1055,7 @@ def delete_user(user_id: int, user=Depends(require("admin")), db=Depends(get_db)
     u = row_or_404(db, "SELECT * FROM user WHERE id = ?", (user_id,), "Пользователь")
     with tx(db):
         db.execute("UPDATE import_batch SET user_id = NULL WHERE user_id = ?", (user_id,))
+        db.execute("DELETE FROM user_pin WHERE user_id = ?", (user_id,))
         db.execute("DELETE FROM user WHERE id = ?", (user_id,))
         audit(db, user, "delete", "user", user_id, {"login": u["login"]})
     return {"ok": True}

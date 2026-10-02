@@ -521,11 +521,15 @@ async function openCard(id, at) {
 
 // ---------------------------------------------------------------- поиск
 
-// ---------------------------------------------------------------- метка найденного адреса (не сохраняется)
+// ---------------------------------------------------------------- метки: найденный адрес и личные сохранённые метки
 
 const PIN_COLORS = ['#7b1fa2', '#e53935', '#fb8c00', '#fdd835', '#43a047', '#00897b', '#1e6fd9', '#37474f'];
 const PIN_RADII = [0, 100, 300, 500, 1000, 3000];
-let pin = null; // { marker, popup, lon, lat, name, color, radius }
+const PINS_SHOWN_KEY = 'objmap_pins_shown';
+// Метка: { id (null — не сохранена), name, address, lat, lon, color, radius_m, marker }
+let searchPin = null;
+let savedPins = [];
+let showSavedPins = true;
 
 function pinSvg(color) {
   return `<svg viewBox="0 0 30 40" width="30" height="40" aria-hidden="true">
@@ -533,79 +537,214 @@ function pinSvg(color) {
     <circle cx="15" cy="14" r="6.5" fill="#fff"/><circle cx="15" cy="14" r="3" fill="${color}"/></svg>`;
 }
 
-function updatePinZone() {
-  const src = map.getSource('pin-zone');
-  if (!src) return;
-  if (!pin || !pin.radius) {
-    src.setData(EMPTY);
-    return;
-  }
-  const k = (pin.radius * 512) / (EARTH_CIRCUMFERENCE_M * Math.cos((pin.lat * Math.PI) / 180));
-  src.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [pin.lon, pin.lat] }, properties: { k, c: pin.color } }] });
-}
-
-function removePin() {
-  pin?.popup?.remove();
-  pin?.marker.remove();
-  pin = null;
-  updatePinZone();
-}
-
 function radiusLabel(r) {
   if (!r) return 'Нет';
   return r >= 1000 ? `${r / 1000} км` : `${r} м`;
 }
 
-function openPinPopup() {
-  if (!pin) return;
-  pin.popup?.remove();
+function shortAddress(name) {
+  return String(name || '').split(', ').slice(0, 2).join(', ');
+}
+
+function visiblePins() {
+  return [...(showSavedPins ? savedPins : []), ...(searchPin ? [searchPin] : [])];
+}
+
+function updatePinZones() {
+  const src = map.getSource('pin-zone');
+  if (!src) return;
+  const features = visiblePins().filter((p) => p.radius_m > 0).map((p) => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+    properties: { k: (p.radius_m * 512) / (EARTH_CIRCUMFERENCE_M * Math.cos((p.lat * Math.PI) / 180)), c: p.color },
+  }));
+  src.setData({ type: 'FeatureCollection', features });
+}
+
+function makePinMarker(p) {
+  const el = document.createElement('div');
+  el.className = 'search-pin';
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPinPopup(p);
+  });
+  p.marker = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.lon, p.lat]);
+  refreshPinMarker(p);
+}
+
+function refreshPinMarker(p) {
+  const el = p.marker.getElement();
+  el.innerHTML = pinSvg(p.color);
+  el.classList.toggle('saved', Boolean(p.id));
+  el.title = p.id ? `${p.name}\nМоя метка — нажмите, чтобы изменить` : `${p.name}\nНажмите, чтобы задать радиус, цвет или сохранить`;
+}
+
+function renderSavedPins() {
+  if (!data.canSavePins) return;
+  for (const p of savedPins) {
+    if (showSavedPins) p.marker.addTo(map);
+    else p.marker.remove();
+  }
+  $('pinsBlock').hidden = false;
+  $('pinsToggle').checked = showSavedPins;
+  $('pinsCount').textContent = savedPins.length ? `(${savedPins.length})` : '';
+  $('pinList').innerHTML = savedPins.length
+    ? savedPins.map((p) => `<li>
+        <button type="button" class="pin-go" data-pin="${p.id}" title="${esc(p.address || p.name)}">
+          <span class="pin-dot" style="background:${esc(p.color)}"></span><span class="pin-name">${esc(p.name)}</span>
+          ${p.radius_m ? `<span class="muted small">${radiusLabel(p.radius_m)}</span>` : ''}</button>
+        <button type="button" class="pin-del" data-del-pin="${p.id}" title="Удалить метку" aria-label="Удалить метку">×</button>
+      </li>`).join('')
+    : '<li class="muted small">Найдите адрес и нажмите «Сохранить метку»</li>';
+  updatePinZones();
+}
+
+async function loadSavedPins() {
+  if (!data.canSavePins) return;
+  try { showSavedPins = localStorage.getItem(PINS_SHOWN_KEY) !== '0'; } catch { /* приватный режим */ }
+  savedPins = (await data.pins()).map((p) => ({ ...p }));
+  savedPins.forEach(makePinMarker);
+  renderSavedPins();
+}
+
+function setShowSavedPins(show) {
+  showSavedPins = show;
+  try { localStorage.setItem(PINS_SHOWN_KEY, show ? '1' : '0'); } catch { /* приватный режим */ }
+  renderSavedPins();
+}
+
+function removeSearchPin() {
+  if (cardPopup && searchPin && cardPopup === searchPin.popup) closeCard();
+  searchPin?.marker.remove();
+  searchPin = null;
+  updatePinZones();
+}
+
+function setSearchPin({ lon, lat, name }) {
+  const keep = searchPin ? { color: searchPin.color, radius_m: searchPin.radius_m } : { color: PIN_COLORS[0], radius_m: 0 };
+  removeSearchPin();
+  searchPin = { id: null, name: shortAddress(name), address: name, lon, lat, ...keep };
+  makePinMarker(searchPin);
+  searchPin.marker.addTo(map);
+  updatePinZones();
+}
+
+const pinPayload = (p) => ({ name: p.name, address: p.address, lat: p.lat, lon: p.lon, color: p.color, radius_m: p.radius_m });
+
+async function deleteSavedPin(p) {
+  if (!(await confirmDialog('Удалить метку?', `Метка «${p.name}» будет удалена.`, 'Удалить'))) return;
+  try {
+    await data.deletePin(p.id);
+    if (cardPopup && cardPopup === p.popup) closeCard();
+    p.marker.remove();
+    savedPins = savedPins.filter((x) => x !== p);
+    renderSavedPins();
+    toast('Метка удалена', 'success');
+  } catch (e) {
+    fail(e);
+  }
+}
+
+function openPinPopup(p) {
+  const saved = Boolean(p.id);
   const box = document.createElement('div');
   box.className = 'card-content pin-card';
   box.innerHTML = `
-    <div class="card-head">${pinSvg(pin.color)}<div><h2>Найденный адрес</h2><div class="muted small">${esc(pin.name)}</div></div></div>
-    <table class="kv">${row('Координаты', copyable(`${pin.lat.toFixed(6)}, ${pin.lon.toFixed(6)}`, `${pin.lat}, ${pin.lon}`))}</table>
+    <div class="card-head">${pinSvg(p.color)}<div><h2>${saved ? 'Моя метка' : 'Найденный адрес'}</h2>
+      <div class="muted small">${esc(p.address || '')}</div></div></div>
+    ${saved || data.canSavePins ? `<label class="pin-name-field">Название<input data-name maxlength="200" value="${esc(p.name)}"></label>` : ''}
+    <table class="kv">${row('Координаты', copyable(`${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}`, `${p.lat}, ${p.lon}`))}</table>
     <div class="pin-field">
       <div class="pin-label">Радиус зоны</div>
-      <div class="chips">${PIN_RADII.map((r) => `<button type="button" class="chip-btn ${r === pin.radius ? 'active' : ''}" data-r="${r}">${radiusLabel(r)}</button>`).join('')}</div>
-      <label class="pin-inline">или <input type="number" min="0" max="100000" step="10" value="${pin.radius || ''}" placeholder="0" data-radius> м</label>
+      <div class="chips">${PIN_RADII.map((r) => `<button type="button" class="chip-btn ${r === p.radius_m ? 'active' : ''}" data-r="${r}">${radiusLabel(r)}</button>`).join('')}</div>
+      <label class="pin-inline">или <input type="number" min="0" max="100000" step="10" value="${p.radius_m || ''}" placeholder="0" data-radius> м</label>
     </div>
     <div class="pin-field">
       <div class="pin-label">Цвет</div>
-      <div class="swatches">${PIN_COLORS.map((c) => `<button type="button" class="swatch-btn ${c === pin.color ? 'active' : ''}" data-c="${c}" style="background:${c}" title="${c}" aria-label="Цвет ${c}"></button>`).join('')}
-        <input type="color" value="${pin.color}" data-color title="Свой цвет" aria-label="Свой цвет"></div>
+      <div class="swatches">${PIN_COLORS.map((c) => `<button type="button" class="swatch-btn ${c === p.color ? 'active' : ''}" data-c="${c}" style="background:${c}" title="${c}" aria-label="Цвет ${c}"></button>`).join('')}
+        <input type="color" value="${p.color}" data-color title="Свой цвет" aria-label="Свой цвет"></div>
     </div>
-    <p class="muted small">Метка не сохраняется: исчезнет при новом поиске адреса или перезагрузке страницы.</p>
-    <div class="card-actions"><button class="btn" data-remove>Убрать метку</button></div>`;
+    ${saved
+    ? '<p class="muted small pin-status" data-status>Видна только вам. Изменения сохраняются автоматически.</p><div class="card-actions"><button class="btn danger" data-delete>Удалить метку</button></div>'
+    : data.canSavePins
+      ? '<p class="muted small">Метка не сохранена: исчезнет при новом поиске адреса или перезагрузке страницы.</p><div class="card-actions"><button class="btn primary" data-save>Сохранить метку</button><button class="btn" data-remove>Убрать</button></div>'
+      : '<p class="muted small">Метка не сохраняется: исчезнет при новом поиске адреса или перезагрузке страницы.</p><div class="card-actions"><button class="btn" data-remove>Убрать метку</button></div>'}`;
 
-  const refresh = () => {
-    pin.marker.getElement().innerHTML = pinSvg(pin.color);
-    box.querySelector('.card-head svg').outerHTML = pinSvg(pin.color);
-    box.querySelectorAll('[data-r]').forEach((b) => b.classList.toggle('active', Number(b.dataset.r) === pin.radius));
-    box.querySelectorAll('[data-c]').forEach((b) => b.classList.toggle('active', b.dataset.c === pin.color));
-    box.querySelector('[data-color]').value = pin.color;
-    updatePinZone();
+  const status = box.querySelector('[data-status]');
+  let saveTimer;
+  const autosave = () => {
+    if (!p.id) return;
+    clearTimeout(saveTimer);
+    if (status) status.textContent = 'Сохраняю…';
+    saveTimer = setTimeout(async () => {
+      try {
+        await data.updatePin(p.id, pinPayload(p));
+        if (status) status.textContent = 'Сохранено. Метка видна только вам.';
+      } catch (e) {
+        if (status) status.textContent = `Не сохранено: ${e.message}`;
+      }
+    }, 500);
   };
+  const changed = () => {
+    refreshPinMarker(p);
+    box.querySelector('.card-head svg').outerHTML = pinSvg(p.color);
+    box.querySelectorAll('[data-r]').forEach((b) => b.classList.toggle('active', Number(b.dataset.r) === p.radius_m));
+    box.querySelectorAll('[data-c]').forEach((b) => b.classList.toggle('active', b.dataset.c === p.color));
+    box.querySelector('[data-color]').value = p.color;
+    if (p.id) renderSavedPins();
+    else updatePinZones();
+    autosave();
+  };
+
   box.addEventListener('keydown', (e) => e.stopPropagation()); // цифры и +/− в полях не управляют картой
-  box.addEventListener('click', (e) => {
+  box.addEventListener('click', async (e) => {
     const r = e.target.closest('[data-r]');
     const c = e.target.closest('[data-c]');
     if (r) {
-      pin.radius = Number(r.dataset.r);
-      box.querySelector('[data-radius]').value = pin.radius || '';
-      refresh();
+      p.radius_m = Number(r.dataset.r);
+      box.querySelector('[data-radius]').value = p.radius_m || '';
+      changed();
     } else if (c) {
-      pin.color = c.dataset.c;
-      refresh();
+      p.color = c.dataset.c;
+      changed();
     } else if (e.target.closest('[data-remove]')) {
-      removePin();
+      removeSearchPin();
+    } else if (e.target.closest('[data-delete]')) {
+      deleteSavedPin(p);
+    } else if (e.target.closest('[data-save]')) {
+      const btn = e.target.closest('[data-save]');
+      btn.disabled = true;
+      try {
+        const res = await data.createPin(pinPayload(p));
+        Object.assign(p, res);
+        searchPin = null;
+        savedPins.push(p);
+        savedPins.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+        if (!showSavedPins) setShowSavedPins(true);
+        refreshPinMarker(p);
+        renderSavedPins();
+        toast('Метка сохранена — она в разделе «Мои метки» в фильтрах', 'success');
+        openPinPopup(p);
+      } catch (ex) {
+        btn.disabled = false;
+        fail(ex);
+      }
     }
   });
   box.querySelector('[data-radius]').addEventListener('input', (e) => {
     const v = Math.round(Number(e.target.value));
-    pin.radius = Number.isFinite(v) ? Math.max(0, Math.min(100000, v)) : 0;
-    refresh();
+    p.radius_m = Number.isFinite(v) ? Math.max(0, Math.min(100000, v)) : 0;
+    changed();
   });
-  box.querySelector('[data-color]').addEventListener('input', (e) => { pin.color = e.target.value; refresh(); });
+  box.querySelector('[data-color]').addEventListener('input', (e) => { p.color = e.target.value; changed(); });
+  box.querySelector('[data-name]')?.addEventListener('input', (e) => {
+    const v = e.target.value.trim();
+    if (!v) return; // пустое название не сохраняем
+    p.name = v;
+    refreshPinMarker(p);
+    if (p.id) renderSavedPins();
+    autosave();
+  });
   box.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
     const ok = await copyText(b.dataset.copy);
     b.innerHTML = ok ? DONE_ICON : COPY_ICON;
@@ -613,25 +752,29 @@ function openPinPopup() {
   }));
 
   closeCard();
-  pin.popup = new maplibregl.Popup({ offset: [0, -40], maxWidth: '360px', className: 'card-popup', focusAfterOpen: false })
-    .setLngLat([pin.lon, pin.lat]).setDOMContent(box).addTo(map);
-  cardPopup = pin.popup; // сдвиг карты под окно — как у карточки объекта
+  p.popup = new maplibregl.Popup({ offset: [0, -40], maxWidth: '360px', className: 'card-popup', focusAfterOpen: false })
+    .setLngLat([p.lon, p.lat]).setDOMContent(box).addTo(map);
+  cardPopup = p.popup; // сдвиг карты под окно — как у карточки объекта
   requestAnimationFrame(fitCardPopup);
 }
 
-function setPin({ lon, lat, name }) {
-  const keep = pin ? { color: pin.color, radius: pin.radius } : { color: PIN_COLORS[0], radius: 0 };
-  removePin();
-  const el = document.createElement('div');
-  el.className = 'search-pin';
-  el.title = `${name}\nНажмите, чтобы задать радиус и цвет`;
-  el.innerHTML = pinSvg(keep.color);
-  el.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openPinPopup();
+function setupPinsPanel() {
+  if (!data.canSavePins) return;
+  $('pinsToggle').addEventListener('change', (e) => setShowSavedPins(e.target.checked));
+  $('pinList').addEventListener('click', (e) => {
+    const del = e.target.closest('[data-del-pin]');
+    const go = e.target.closest('[data-pin]');
+    if (del) {
+      const p = savedPins.find((x) => x.id === Number(del.dataset.delPin));
+      if (p) deleteSavedPin(p);
+    } else if (go) {
+      const p = savedPins.find((x) => x.id === Number(go.dataset.pin));
+      if (!p) return;
+      if (!showSavedPins) setShowSavedPins(true);
+      map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 15) });
+      openPinPopup(p);
+    }
   });
-  pin = { lon, lat, name, ...keep, marker: new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([lon, lat]).addTo(map) };
-  updatePinZone();
 }
 
 // ---------------------------------------------------------------- поиск: объекты и адреса
@@ -727,8 +870,8 @@ function setupSearch() {
       } else {
         map.flyTo({ center: [a.lon, a.lat], zoom: Math.max(map.getZoom(), a.bbox && Math.abs(ea - w) > 0.5 ? 11 : 15) });
       }
-      setPin({ lon: a.lon, lat: a.lat, name: a.name });
-      toast('Метка поставлена — нажмите на неё, чтобы задать радиус и цвет', 'info', 5000);
+      setSearchPin({ lon: a.lon, lat: a.lat, name: a.name });
+      toast(data.canSavePins ? 'Метка поставлена — нажмите на неё, чтобы задать радиус, цвет или сохранить' : 'Метка поставлена — нажмите на неё, чтобы задать радиус и цвет', 'info', 5000);
       return;
     }
     const b = e.target.closest('button[data-id]');
@@ -1101,6 +1244,8 @@ async function init() {
     setupCsvImport();
     return;
   }
+  setupPinsPanel();
+  loadSavedPins().catch((e) => toast(`Не удалось загрузить мои метки: ${e.message}`, 'error'));
   // Данные могли обновиться в панели управления — перечитываем при возврате на вкладку.
   let loadedAt = Date.now();
   document.addEventListener('visibilitychange', async () => {

@@ -13,6 +13,11 @@ const liveProvider = {
   search: (q) => api.get(`/api/search?q=${encodeURIComponent(q)}`),
   attributeValues: (name) => api.get(`/api/attribute-values?name=${encodeURIComponent(name)}`),
   geocode: (q, viewbox) => api.get(`/api/geocode?q=${encodeURIComponent(q)}${viewbox ? `&viewbox=${viewbox}` : ''}`),
+  canSavePins: true,
+  pins: () => api.get('/api/pins'),
+  createPin: (p) => api.post('/api/pins', p),
+  updatePin: (id, p) => api.put(`/api/pins/${id}`, p),
+  deletePin: (id) => api.del(`/api/pins/${id}`),
   canComment: true,
   comments: (id) => api.get(`/api/objects/${id}/comments`),
   addComment: (id, text) => api.post(`/api/objects/${id}/comments`, { text }),
@@ -106,6 +111,9 @@ function snapshotProvider(snap) {
         return { name: it.display_name, lat: Number(it.lat), lon: Number(it.lon), bbox: bb.length === 4 ? [bb[2], bb[0], bb[3], bb[1]] : null };
       });
     },
+    // Личные метки привязаны к пользователю на сервере — в выгрузке их нет.
+    canSavePins: false,
+    pins: async () => [],
     // Комментарии в выгрузке — снимок на момент скачивания, только для чтения.
     canComment: false,
     comments: async (id) => (byId.get(id)?.comments || []).map((c) => ({ ...c, can_delete: false })),

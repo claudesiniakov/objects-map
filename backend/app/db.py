@@ -96,6 +96,21 @@ CREATE TABLE IF NOT EXISTS object_comment (
 );
 CREATE INDEX IF NOT EXISTS idx_comment_object ON object_comment(object_id, id);
 
+-- Личные метки пользователя (из поиска адресов): видит и меняет только владелец.
+CREATE TABLE IF NOT EXISTS user_pin (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    address TEXT,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    color TEXT NOT NULL,
+    radius_m INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pin_user ON user_pin(user_id);
+
 CREATE TABLE IF NOT EXISTS mapping_template (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
