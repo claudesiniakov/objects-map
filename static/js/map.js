@@ -26,6 +26,9 @@ const state = {
 let map;
 let clusterMarkers = {};
 let clustersOnScreen = {};
+// Подписи стоимости под одиночными маркерами — пока на экране есть кластеры.
+let costLabels = {};
+let costLabelsOnScreen = {};
 let spider = [];
 let hoverPopup;
 
@@ -219,8 +222,19 @@ function donutElement(props) {
 
 function clearClusterMarkers() {
   for (const m of Object.values(clustersOnScreen)) m.remove();
+  for (const m of Object.values(costLabelsOnScreen)) m.remove();
   clusterMarkers = {};
   clustersOnScreen = {};
+  costLabels = {};
+  costLabelsOnScreen = {};
+}
+
+function costLabelMarker(coords, cost) {
+  const el = document.createElement('div');
+  el.className = 'point-cost';
+  el.textContent = fmtCost(cost);
+  // Маркер объекта стоит остриём на точке — подпись сразу под остриём.
+  return new maplibregl.Marker({ element: el, anchor: 'top', offset: [0, 2] }).setLngLat(coords);
 }
 
 function updateClusterMarkers() {
@@ -248,6 +262,26 @@ function updateClusterMarkers() {
     if (!next[id]) clustersOnScreen[id].remove();
   }
   clustersOnScreen = next;
+  updateCostLabels();
+}
+
+function updateCostLabels() {
+  const bounds = map.getBounds();
+  const clustersVisible = Object.values(clustersOnScreen).some((m) => bounds.contains(m.getLngLat()));
+  const next = {};
+  if (clustersVisible) {
+    for (const f of map.querySourceFeatures('objects')) {
+      const p = f.properties;
+      if (p.cluster || typeof p.c !== 'number' || next[p.id]) continue;
+      const marker = costLabels[p.id] || (costLabels[p.id] = costLabelMarker(f.geometry.coordinates, p.c));
+      next[p.id] = marker;
+      if (!costLabelsOnScreen[p.id]) marker.addTo(map);
+    }
+  }
+  for (const id of Object.keys(costLabelsOnScreen)) {
+    if (!next[id]) costLabelsOnScreen[id].remove();
+  }
+  costLabelsOnScreen = next;
 }
 
 async function onClusterClick(id, coords) {
