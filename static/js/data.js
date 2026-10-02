@@ -12,6 +12,7 @@ const liveProvider = {
   object: (id) => api.get(`/api/objects/${id}`),
   search: (q) => api.get(`/api/search?q=${encodeURIComponent(q)}`),
   attributeValues: (name) => api.get(`/api/attribute-values?name=${encodeURIComponent(name)}`),
+  geocode: (q, viewbox) => api.get(`/api/geocode?q=${encodeURIComponent(q)}${viewbox ? `&viewbox=${viewbox}` : ''}`),
   canComment: true,
   comments: (id) => api.get(`/api/objects/${id}/comments`),
   addComment: (id, text) => api.post(`/api/objects/${id}/comments`, { text }),
@@ -88,6 +89,22 @@ function snapshotProvider(snap) {
       return [...counts]
         .sort(([a], [b]) => (a === null) - (b === null) || String(a).localeCompare(String(b), 'ru'))
         .map(([value, n]) => ({ value, objects: n }));
+    },
+    // Адреса в выгрузке ищутся напрямую в Nominatim (сервера сервиса здесь нет).
+    geocode: async (q, viewbox) => {
+      const params = new URLSearchParams({ format: 'jsonv2', q, limit: '6', 'accept-language': 'ru' });
+      if (viewbox) params.set('viewbox', viewbox);
+      let res;
+      try {
+        res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`);
+      } catch {
+        throw new Error('Поиск адресов недоступен — нужен интернет');
+      }
+      if (!res.ok) throw new Error(`Поиск адресов недоступен (${res.status})`);
+      return (await res.json()).map((it) => {
+        const bb = (it.boundingbox || []).map(Number);
+        return { name: it.display_name, lat: Number(it.lat), lon: Number(it.lon), bbox: bb.length === 4 ? [bb[2], bb[0], bb[3], bb[1]] : null };
+      });
     },
     // Комментарии в выгрузке — снимок на момент скачивания, только для чтения.
     canComment: false,

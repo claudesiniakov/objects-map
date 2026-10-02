@@ -521,30 +521,216 @@ async function openCard(id, at) {
 
 // ---------------------------------------------------------------- поиск
 
+// ---------------------------------------------------------------- метка найденного адреса (не сохраняется)
+
+const PIN_COLORS = ['#7b1fa2', '#e53935', '#fb8c00', '#fdd835', '#43a047', '#00897b', '#1e6fd9', '#37474f'];
+const PIN_RADII = [0, 100, 300, 500, 1000, 3000];
+let pin = null; // { marker, popup, lon, lat, name, color, radius }
+
+function pinSvg(color) {
+  return `<svg viewBox="0 0 30 40" width="30" height="40" aria-hidden="true">
+    <path d="M15 38.5C13 34 3 25 3 14a12 12 0 0 1 24 0c0 11-10 20-12 24.5z" fill="${color}" stroke="#fff" stroke-width="2"/>
+    <circle cx="15" cy="14" r="6.5" fill="#fff"/><circle cx="15" cy="14" r="3" fill="${color}"/></svg>`;
+}
+
+function updatePinZone() {
+  const src = map.getSource('pin-zone');
+  if (!src) return;
+  if (!pin || !pin.radius) {
+    src.setData(EMPTY);
+    return;
+  }
+  const k = (pin.radius * 512) / (EARTH_CIRCUMFERENCE_M * Math.cos((pin.lat * Math.PI) / 180));
+  src.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [pin.lon, pin.lat] }, properties: { k, c: pin.color } }] });
+}
+
+function removePin() {
+  pin?.popup?.remove();
+  pin?.marker.remove();
+  pin = null;
+  updatePinZone();
+}
+
+function radiusLabel(r) {
+  if (!r) return 'Нет';
+  return r >= 1000 ? `${r / 1000} км` : `${r} м`;
+}
+
+function openPinPopup() {
+  if (!pin) return;
+  pin.popup?.remove();
+  const box = document.createElement('div');
+  box.className = 'card-content pin-card';
+  box.innerHTML = `
+    <div class="card-head">${pinSvg(pin.color)}<div><h2>Найденный адрес</h2><div class="muted small">${esc(pin.name)}</div></div></div>
+    <table class="kv">${row('Координаты', copyable(`${pin.lat.toFixed(6)}, ${pin.lon.toFixed(6)}`, `${pin.lat}, ${pin.lon}`))}</table>
+    <div class="pin-field">
+      <div class="pin-label">Радиус зоны</div>
+      <div class="chips">${PIN_RADII.map((r) => `<button type="button" class="chip-btn ${r === pin.radius ? 'active' : ''}" data-r="${r}">${radiusLabel(r)}</button>`).join('')}</div>
+      <label class="pin-inline">или <input type="number" min="0" max="100000" step="10" value="${pin.radius || ''}" placeholder="0" data-radius> м</label>
+    </div>
+    <div class="pin-field">
+      <div class="pin-label">Цвет</div>
+      <div class="swatches">${PIN_COLORS.map((c) => `<button type="button" class="swatch-btn ${c === pin.color ? 'active' : ''}" data-c="${c}" style="background:${c}" title="${c}" aria-label="Цвет ${c}"></button>`).join('')}
+        <input type="color" value="${pin.color}" data-color title="Свой цвет" aria-label="Свой цвет"></div>
+    </div>
+    <p class="muted small">Метка не сохраняется: исчезнет при новом поиске адреса или перезагрузке страницы.</p>
+    <div class="card-actions"><button class="btn" data-remove>Убрать метку</button></div>`;
+
+  const refresh = () => {
+    pin.marker.getElement().innerHTML = pinSvg(pin.color);
+    box.querySelector('.card-head svg').outerHTML = pinSvg(pin.color);
+    box.querySelectorAll('[data-r]').forEach((b) => b.classList.toggle('active', Number(b.dataset.r) === pin.radius));
+    box.querySelectorAll('[data-c]').forEach((b) => b.classList.toggle('active', b.dataset.c === pin.color));
+    box.querySelector('[data-color]').value = pin.color;
+    updatePinZone();
+  };
+  box.addEventListener('keydown', (e) => e.stopPropagation()); // цифры и +/− в полях не управляют картой
+  box.addEventListener('click', (e) => {
+    const r = e.target.closest('[data-r]');
+    const c = e.target.closest('[data-c]');
+    if (r) {
+      pin.radius = Number(r.dataset.r);
+      box.querySelector('[data-radius]').value = pin.radius || '';
+      refresh();
+    } else if (c) {
+      pin.color = c.dataset.c;
+      refresh();
+    } else if (e.target.closest('[data-remove]')) {
+      removePin();
+    }
+  });
+  box.querySelector('[data-radius]').addEventListener('input', (e) => {
+    const v = Math.round(Number(e.target.value));
+    pin.radius = Number.isFinite(v) ? Math.max(0, Math.min(100000, v)) : 0;
+    refresh();
+  });
+  box.querySelector('[data-color]').addEventListener('input', (e) => { pin.color = e.target.value; refresh(); });
+  box.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
+    const ok = await copyText(b.dataset.copy);
+    b.innerHTML = ok ? DONE_ICON : COPY_ICON;
+    setTimeout(() => { b.innerHTML = COPY_ICON; }, 1500);
+  }));
+
+  closeCard();
+  pin.popup = new maplibregl.Popup({ offset: [0, -40], maxWidth: '360px', className: 'card-popup', focusAfterOpen: false })
+    .setLngLat([pin.lon, pin.lat]).setDOMContent(box).addTo(map);
+  cardPopup = pin.popup; // сдвиг карты под окно — как у карточки объекта
+  requestAnimationFrame(fitCardPopup);
+}
+
+function setPin({ lon, lat, name }) {
+  const keep = pin ? { color: pin.color, radius: pin.radius } : { color: PIN_COLORS[0], radius: 0 };
+  removePin();
+  const el = document.createElement('div');
+  el.className = 'search-pin';
+  el.title = `${name}\nНажмите, чтобы задать радиус и цвет`;
+  el.innerHTML = pinSvg(keep.color);
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPinPopup();
+  });
+  pin = { lon, lat, name, ...keep, marker: new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([lon, lat]).addTo(map) };
+  updatePinZone();
+}
+
+// ---------------------------------------------------------------- поиск: объекты и адреса
+
+function objectResults(items) {
+  return items.map((o) => `<li><button data-id="${o.id}" data-lon="${o.lon}" data-lat="${o.lat}" data-type="${o.type_id}">
+    <b>${esc(o.name)}</b><span class="muted small">${esc(o.type_name)}${o.address ? ` · ${esc(o.address)}` : ''}${o.cadastral_number ? ` · КН ${esc(o.cadastral_number)}` : ''}${o.contract_number ? ` · договор ${esc(o.contract_number)}` : ''}</span></button></li>`).join('');
+}
+
 function setupSearch() {
   const input = $('searchInput');
   const list = $('searchResults');
-  const run = debounce(async () => {
+  let objects = [];
+  let addresses = null; // null — адрес ещё не искали; [] — не найден
+  let addrQuery = '';
+
+  const render = () => {
+    const q = input.value.trim();
+    let html = objects.length ? `<li class="search-section">Объекты</li>${objectResults(objects)}` : '';
+    if (addresses && addrQuery === q) {
+      html += '<li class="search-section">Адреса</li>';
+      html += addresses.length
+        ? addresses.map((a, i) => `<li><button data-addr="${i}"><b>${esc(a.name.split(', ').slice(0, 2).join(', '))}</b><span class="muted small">${esc(a.name)}</span></button></li>`).join('')
+        : '<li class="muted empty">Адрес не найден</li>';
+    } else if (q.length >= 3) {
+      html += `<li><button data-geocode class="geocode-btn"><b>Найти адрес «${esc(q)}»</b><span class="muted small">Enter — поиск по карте OpenStreetMap</span></button></li>`;
+    }
+    list.innerHTML = html || '<li class="muted empty">Ничего не найдено</li>';
+    list.hidden = false;
+  };
+
+  const runObjects = debounce(async () => {
     const q = input.value.trim();
     if (q.length < 2) {
       list.hidden = true;
       return;
     }
     try {
-      const items = await data.search(q);
-      list.innerHTML = items.length
-        ? items.map((o) => `<li><button data-id="${o.id}" data-lon="${o.lon}" data-lat="${o.lat}" data-type="${o.type_id}">
-            <b>${esc(o.name)}</b><span class="muted small">${esc(o.type_name)}${o.address ? ` · ${esc(o.address)}` : ''}${o.cadastral_number ? ` · КН ${esc(o.cadastral_number)}` : ''}${o.contract_number ? ` · договор ${esc(o.contract_number)}` : ''}</span></button></li>`).join('')
-        : '<li class="muted empty">Ничего не найдено</li>';
-      list.hidden = false;
+      objects = await data.search(q);
+      render();
     } catch (e) {
       fail(e);
     }
   }, 250);
-  input.addEventListener('input', run);
+
+  const runGeocode = async () => {
+    const q = input.value.trim();
+    if (q.length < 3) return;
+    addrQuery = q;
+    addresses = null;
+    list.innerHTML = `${objects.length ? `<li class="search-section">Объекты</li>${objectResults(objects)}` : ''}<li class="muted empty">Ищу адрес…</li>`;
+    list.hidden = false;
+    try {
+      const b = map.getBounds();
+      const viewbox = [b.getWest(), b.getNorth(), b.getEast(), b.getSouth()].map((v) => v.toFixed(4)).join(',');
+      const found = await data.geocode(q, viewbox);
+      if (addrQuery !== q) return; // запрос уже сменился
+      addresses = found;
+      render();
+    } catch (e) {
+      addresses = null;
+      list.innerHTML = `<li class="form-error empty">${esc(e.message)}</li>`;
+    }
+  };
+
+  input.addEventListener('input', () => {
+    addresses = null;
+    runObjects();
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      runGeocode();
+    } else if (e.key === 'Escape') {
+      list.hidden = true;
+    }
+  });
   input.addEventListener('focus', () => { if (list.children.length && input.value.trim().length >= 2) list.hidden = false; });
   document.addEventListener('click', (e) => { if (!$('search').contains(e.target)) list.hidden = true; });
   list.addEventListener('click', (e) => {
+    if (e.target.closest('[data-geocode]')) {
+      runGeocode();
+      return;
+    }
+    const addr = e.target.closest('[data-addr]');
+    if (addr) {
+      const a = addresses[Number(addr.dataset.addr)];
+      list.hidden = true;
+      const [w, s, ea, n] = a.bbox || [];
+      // Небольшой объект (дом, улица) — по его границам, иначе — на адрес с приближением.
+      if (a.bbox && Math.abs(ea - w) < 0.05 && Math.abs(n - s) < 0.05) {
+        map.fitBounds([[w, s], [ea, n]], { padding: 120, maxZoom: 17 });
+      } else {
+        map.flyTo({ center: [a.lon, a.lat], zoom: Math.max(map.getZoom(), a.bbox && Math.abs(ea - w) > 0.5 ? 11 : 15) });
+      }
+      setPin({ lon: a.lon, lat: a.lat, name: a.name });
+      toast('Метка поставлена — нажмите на неё, чтобы задать радиус и цвет', 'info', 5000);
+      return;
+    }
     const b = e.target.closest('button[data-id]');
     if (!b) return;
     list.hidden = true;
@@ -828,6 +1014,20 @@ async function init() {
       'circle-stroke-color': ['get', 'c'],
       'circle-stroke-width': 1.5,
       'circle-stroke-opacity': 0.9,
+      'circle-pitch-alignment': 'map',
+    },
+  });
+  map.addSource('pin-zone', { type: 'geojson', data: EMPTY });
+  map.addLayer({
+    id: 'pin-zone',
+    type: 'circle',
+    source: 'pin-zone',
+    paint: {
+      'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 0, ['get', 'k'], 24, ['*', ['get', 'k'], 2 ** 24]],
+      'circle-color': ['get', 'c'],
+      'circle-opacity': 0.18,
+      'circle-stroke-color': ['get', 'c'],
+      'circle-stroke-width': 2,
       'circle-pitch-alignment': 'map',
     },
   });

@@ -1,6 +1,11 @@
 import json
 import re
 import secrets
+import threading
+import time
+import urllib.parse
+import urllib.request
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
@@ -465,6 +470,61 @@ def search(q: str = Query(min_length=1), user=Depends(current_user), db=Depends(
         (like,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- геокодирование адресов
+
+GEOCODER_URL = "https://nominatim.openstreetmap.org/search"
+GEOCODER_UA = "objects-map/1.0 (+https://github.com/claudesiniakov/objects-map)"
+_geocode_cache: "OrderedDict[tuple, list]" = OrderedDict()
+_geocode_lock = threading.Lock()
+_geocode_last = [0.0]
+
+
+def _nominatim(q: str, viewbox: str | None) -> list:
+    params = {"format": "jsonv2", "q": q, "limit": "6", "accept-language": "ru", "addressdetails": "0"}
+    if viewbox:
+        params["viewbox"] = viewbox  # приоритет результатам рядом с текущим видом карты, но без ограничения
+    req = urllib.request.Request(f"{GEOCODER_URL}?{urllib.parse.urlencode(params)}", headers={"User-Agent": GEOCODER_UA})
+    # Правила Nominatim: не больше одного запроса в секунду от приложения.
+    with _geocode_lock:
+        wait = 1.0 - (time.monotonic() - _geocode_last[0])
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+        finally:
+            _geocode_last[0] = time.monotonic()
+    out = []
+    for item in data:
+        bb = item.get("boundingbox") or []
+        out.append({
+            "name": item.get("display_name"),
+            "lat": float(item["lat"]),
+            "lon": float(item["lon"]),
+            "bbox": [float(bb[2]), float(bb[0]), float(bb[3]), float(bb[1])] if len(bb) == 4 else None,  # w, s, e, n
+            "kind": item.get("addresstype") or item.get("type"),
+        })
+    return out
+
+
+@app.get("/api/geocode")
+def geocode(q: str = Query(min_length=3, max_length=300), viewbox: str | None = Query(None, pattern=r"^[-\d.,]+$"),
+            user=Depends(current_user)):
+    """Поиск произвольного адреса (OpenStreetMap Nominatim) — для метки на карте, в базу ничего не пишется."""
+    key = (q.strip().lower(), viewbox)
+    if key in _geocode_cache:
+        _geocode_cache.move_to_end(key)
+        return _geocode_cache[key]
+    try:
+        result = _nominatim(q.strip(), viewbox)
+    except Exception as e:  # сеть, тайм-аут, ответ не JSON
+        raise HTTPException(502, f"Сервис поиска адресов недоступен: {e}")
+    _geocode_cache[key] = result
+    while len(_geocode_cache) > 500:
+        _geocode_cache.popitem(last=False)
+    return result
 
 
 @app.get("/api/sources")
