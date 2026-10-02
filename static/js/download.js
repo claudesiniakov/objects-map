@@ -41,6 +41,49 @@ function stamp(d) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}`;
 }
 
+// Библиотеку карты встраиваем в файл: у страницы, открытой с диска, запросы к CDN может блокировать
+// браузер, антивирус или сеть — тогда не было бы ни карты, ни объектов. Не скачалась — остаётся ссылка на CDN.
+async function inlineLibraries(doc) {
+  const tags = doc.querySelectorAll('link[rel="stylesheet"][href^="https://"], script[src^="https://"]');
+  await Promise.all([...tags].map(async (el) => {
+    const isCss = el.tagName === 'LINK';
+    try {
+      const text = await fetchText(el.getAttribute(isCss ? 'href' : 'src'));
+      const inline = doc.createElement(isCss ? 'style' : 'script');
+      inline.textContent = isCss ? text : scriptSafe(text);
+      el.replaceWith(inline);
+    } catch { /* оставляем внешнюю ссылку */ }
+  }));
+}
+
+// Запасной вариант на случай, если скрипты на странице не запустятся (просмотрщик без JavaScript).
+function noscriptTable(doc, objects, types, attrNames) {
+  const typeName = new Map(types.map((t) => [t.id, t.name]));
+  const ns = doc.createElement('noscript');
+  const wrap = doc.createElement('div');
+  wrap.className = 'noscript-list';
+  const h = doc.createElement('h1');
+  h.textContent = `Объекты выгрузки (${objects.length}) — для карты откройте файл в браузере с включённым JavaScript`;
+  const table = doc.createElement('table');
+  const head = ['Название', 'Тип', 'ID', 'Адрес', 'Широта', 'Долгота', 'Радиус, м', ...attrNames];
+  table.innerHTML = `<thead><tr>${head.map(() => '<th></th>').join('')}</tr></thead><tbody></tbody>`;
+  table.querySelectorAll('th').forEach((th, i) => { th.textContent = head[i]; });
+  const body = table.querySelector('tbody');
+  for (const o of objects) {
+    const tr = doc.createElement('tr');
+    for (const v of [o.name, typeName.get(o.type_id), o.external_id, o.address, o.lat, o.lon, o.effective_radius_m,
+      ...attrNames.map((n) => o.attributes?.[n])]) {
+      const td = doc.createElement('td');
+      td.textContent = v ?? '';
+      tr.append(td);
+    }
+    body.append(tr);
+  }
+  wrap.append(h, table);
+  ns.append(wrap);
+  return ns;
+}
+
 export function describeFilters(state) {
   const parts = [];
   if (state.visible.size !== state.types.length) {
@@ -101,6 +144,8 @@ export async function downloadSnapshot(map, state, button) {
     style.textContent = css;
     cssLink.replaceWith(style);
     doc.querySelectorAll('script[type="module"]').forEach((s) => s.remove());
+    await inlineLibraries(doc);
+    doc.body.prepend(noscriptTable(doc, objects, types, state.attrNames));
     const data = doc.createElement('script');
     data.textContent = `window.OBJMAP_SNAPSHOT = ${jsonForScript(snapshot)};`;
     const code = doc.createElement('script');

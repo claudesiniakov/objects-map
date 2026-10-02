@@ -262,3 +262,8 @@ label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--t
 .filter-list { display: flex; flex-direction: column; gap: 10px; }
 .panel-actions .btn + .btn { margin-top: 8px; }
 .snapshot-info { padding: 3px 10px; border-radius: 12px; background: var(--warn-soft); color: var(--warn); font-size: 13px; cursor: help; }
+.loading-error { color: var(--bad); max-width: min(560px, 90vw); text-align: center; }
+.noscript-list { position: relative; z-index: 300; background: var(--surface); padding: 16px; }
+.noscript-list h1 { font-size: 16px; margin-bottom: 12px; }
+.noscript-list table { border-collapse: collapse; font-size: 13px; }
+.noscript-list th, .noscript-list td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }

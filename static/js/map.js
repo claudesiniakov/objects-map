@@ -1,4 +1,4 @@
-import { can, debounce, esc, fail, fmtDate, fmtNum, logout } from './api.js';
+import { can, debounce, esc, fail, fmtDate, fmtNum, logout, toast } from './api.js';
 import { createProvider } from './data.js';
 import { downloadSnapshot } from './download.js';
 import { markerCanvas, markerDataUrl } from './icons.js';
@@ -539,6 +539,13 @@ async function init() {
     if (map.getSource('objects') && map.isSourceLoaded('objects')) updateClusterMarkers();
   });
   map.on('moveend', writeHash);
+  // Подложка грузится из интернета; если тайлы недоступны, объекты всё равно видны — предупреждаем один раз.
+  let tilesWarned = false;
+  map.on('error', (e) => {
+    if (tilesWarned || e.sourceId !== 'osm') return;
+    tilesWarned = true;
+    toast('Не загрузилась подложка карты (нет доступа к tile.openstreetmap.org) — объекты показаны без неё', 'error', 8000);
+  });
   map.on('zoomstart', clearSpider);
   map.on('click', (e) => {
     if (!map.queryRenderedFeatures(e.point, { layers: ['points'] }).length) clearSpider();
@@ -606,6 +613,12 @@ async function init() {
 }
 
 init().catch((e) => {
-  $('loading').textContent = `Не удалось загрузить карту: ${e.message}`;
+  const box = $('loading');
+  const reason = typeof maplibregl === 'undefined'
+    ? 'не загрузилась библиотека карты — проверьте доступ в интернет'
+    : e.message;
+  box.hidden = false;
+  box.classList.add('loading-error');
+  box.textContent = `Не удалось показать карту: ${reason}`;
   fail(e);
 });
