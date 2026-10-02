@@ -1,4 +1,4 @@
-import { can, debounce, esc, fail, fmtDate, fmtNum, logout, modal, toast } from './api.js';
+import { can, confirmDialog, debounce, esc, fail, fmtDate, fmtNum, logout, modal, toast } from './api.js';
 import { csvToObjects, parseCsv, readCsvFile } from './csv.js';
 import { createProvider } from './data.js';
 import { downloadSnapshot } from './download.js';
@@ -299,6 +299,25 @@ const narrowScreen = () => window.matchMedia('(max-width: 800px)').matches;
 let cardPopup;
 let cardSeq = 0;
 
+// Сдвигает карту, чтобы всплывающая карточка целиком помещалась на экране.
+function fitCardPopup() {
+  if (!cardPopup?.isOpen()) return;
+  if (map.isMoving()) {
+    map.once('moveend', fitCardPopup); // например, ещё идёт перелёт к найденному объекту
+    return;
+  }
+  const r = cardPopup.getElement().getBoundingClientRect();
+  const c = map.getContainer().getBoundingClientRect();
+  const m = 12;
+  let dx = 0;
+  let dy = 0;
+  if (r.bottom > c.bottom - m) dy = r.bottom - (c.bottom - m);
+  if (r.top - dy < c.top + m) dy = r.top - (c.top + m);
+  if (r.right > c.right - m) dx = r.right - (c.right - m);
+  if (r.left - dx < c.left + m) dx = r.left - (c.left + m);
+  if (dx || dy) map.panBy([dx, dy], { duration: 300 });
+}
+
 function closeCard() {
   cardPopup?.remove();
   $('card').hidden = true;
@@ -327,10 +346,109 @@ function cardHtml(o, icon) {
       ${row('Импорт', o.import_file ? `${esc(o.import_file)}, ${fmtDate(o.import_at)}` : '')}
       ${row('Обновлён', fmtDate(o.updated_at))}
     </table>
+    ${commentsHtml(o)}
     <div class="card-actions">
       <button class="btn" data-zoom>Приблизить</button>
       ${data.mode === 'live' && can('operator') ? `<a class="btn" href="/admin#objects/${o.id}">Редактировать</a>` : ''}
     </div>`;
+}
+
+// ---------------------------------------------------------------- комментарии в карточке
+
+const COMMENTS_OPEN_KEY = 'objmap_comments_open';
+
+function commentsOpen() {
+  try { return localStorage.getItem(COMMENTS_OPEN_KEY) === '1'; } catch { return false; }
+}
+
+function rememberCommentsOpen(open) {
+  try { localStorage.setItem(COMMENTS_OPEN_KEY, open ? '1' : '0'); } catch { /* приватный режим */ }
+}
+
+function commentsHtml(o) {
+  const count = o.comments_count ?? o.comments?.length ?? 0;
+  return `
+    <details class="comments" ${commentsOpen() ? 'open' : ''}>
+      <summary>Комментарии <span class="comment-count">${count}</span></summary>
+      ${data.canComment ? `
+        <form class="comment-form">
+          <textarea rows="2" maxlength="2000" placeholder="Комментарий… (Ctrl+Enter — отправить)" required></textarea>
+          <button class="btn small primary" type="submit">Добавить</button>
+        </form>` : '<p class="muted small">В выгрузке комментарии только для чтения.</p>'}
+      <ul class="comment-list"><li class="muted small">Загрузка…</li></ul>
+    </details>`;
+}
+
+function renderComments(list, items) {
+  list.innerHTML = items.length
+    ? items.map((c) => `
+      <li>
+        <div class="comment-meta"><b>${esc(c.author)}</b> · ${fmtDate(c.created_at)}
+          ${c.can_delete ? `<button class="link-btn" data-del="${c.id}">удалить</button>` : ''}</div>
+        <div class="comment-text">${esc(c.text).replace(/\n/g, '<br>')}</div>
+      </li>`).join('')
+    : '<li class="muted small">Комментариев пока нет</li>';
+}
+
+function setupComments(box, o) {
+  const det = box.querySelector('details.comments');
+  const list = det.querySelector('.comment-list');
+  const count = det.querySelector('.comment-count');
+  let items = null;
+  const show = () => { renderComments(list, items); count.textContent = items.length; };
+  const load = async () => {
+    try {
+      items = await data.comments(o.id);
+      show();
+    } catch (e) {
+      list.innerHTML = `<li class="form-error">${esc(e.message)}</li>`;
+    }
+  };
+  det.addEventListener('toggle', () => {
+    rememberCommentsOpen(det.open);
+    if (det.open && !items) load().then(() => requestAnimationFrame(fitCardPopup));
+    else requestAnimationFrame(fitCardPopup);
+  });
+  if (det.open) load();
+
+  const form = det.querySelector('.comment-form');
+  if (form) {
+    const area = form.querySelector('textarea');
+    // Клавиши в поле ввода не должны управлять картой (+/− масштабируют, стрелки двигают).
+    area.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) form.requestSubmit();
+    });
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = area.value.trim();
+      if (!text) return;
+      const btn = form.querySelector('button');
+      btn.disabled = true;
+      try {
+        const c = await data.addComment(o.id, text);
+        items = [c, ...(items || [])];
+        show();
+        area.value = '';
+      } catch (ex) {
+        fail(ex);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+  list.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-del]');
+    if (!b) return;
+    if (!(await confirmDialog('Удалить комментарий?', 'Комментарий будет удалён без возможности восстановления.', 'Удалить'))) return;
+    try {
+      await data.deleteComment(Number(b.dataset.del));
+      items = items.filter((c) => c.id !== Number(b.dataset.del));
+      show();
+    } catch (ex) {
+      fail(ex);
+    }
+  });
 }
 
 /** Открывает карточку объекта. at — точка привязки окна (для «веера» — место маркера в веере). */
@@ -358,11 +476,13 @@ async function openCard(id, at) {
       navigator.clipboard?.writeText(e.target.dataset.copy);
       e.target.textContent = 'скопировано';
     }));
+    setupComments(box, o);
     if (!inPanel) {
       cardPopup = new maplibregl.Popup({ offset: [0, -38], maxWidth: '380px', className: 'card-popup', focusAfterOpen: false })
         .setLngLat(at ?? [o.lon, o.lat])
         .setDOMContent(box)
         .addTo(map);
+      requestAnimationFrame(fitCardPopup);
     }
   } catch (e) {
     box.innerHTML = `<p class="form-error">${esc(e.message)}</p>`;

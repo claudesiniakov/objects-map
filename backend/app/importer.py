@@ -357,8 +357,12 @@ def commit(db, batch: dict, result: dict, user) -> dict:
     import_id = batch["id"]
     added = updated = deleted = 0
     with tx(db):
+        old_by_ext = {}  # внешний ID → id удаляемого объекта, чтобы перенести комментарии на новый
+        created_by_ext = {}
         if batch["mode"] == "replace":
             for old in db.execute("SELECT * FROM map_object WHERE source = ?", (source,)).fetchall():
+                if old["external_id"]:
+                    old_by_ext[old["external_id"]] = old["id"]
                 db.execute(
                     "INSERT INTO import_change (import_id, object_id, action, before) VALUES (?,?,?,?)",
                     (import_id, old["id"], "deleted", _object_snapshot(old)),
@@ -398,7 +402,12 @@ def commit(db, batch: dict, result: dict, user) -> dict:
                     "INSERT INTO import_change (import_id, object_id, action) VALUES (?,?,?)",
                     (import_id, cur.lastrowid, "created"),
                 )
+                if d["external_id"]:
+                    created_by_ext[d["external_id"]] = cur.lastrowid
                 added += 1
+        for ext, new_id in created_by_ext.items():
+            if ext in old_by_ext:
+                db.execute("UPDATE object_comment SET object_id = ? WHERE object_id = ?", (new_id, old_by_ext[ext]))
         errors = result["counts"]["skip"]
         db.execute(
             "UPDATE import_batch SET status='committed', added=?, updated=?, deleted=?, errors=?, committed_at=? WHERE id=?",
@@ -417,8 +426,22 @@ def rollback(db, batch: dict, user) -> dict:
         changes = db.execute(
             "SELECT * FROM import_change WHERE import_id = ? ORDER BY id DESC", (batch["id"],)
         ).fetchall()
+        # Объекты, удалённые этим импортом (режим «Заменить»): комментарии возвращаются к ним по внешнему ID.
+        restored_by_ext = {}
+        for c in changes:
+            if c["action"] == "deleted":
+                before = json.loads(c["before"])
+                if before.get("external_id"):
+                    restored_by_ext[before["external_id"]] = before["id"]
         for c in changes:
             if c["action"] == "created":
+                row = db.execute("SELECT external_id FROM map_object WHERE id = ?", (c["object_id"],)).fetchone()
+                ext = row["external_id"] if row else None
+                if ext in restored_by_ext:
+                    db.execute("UPDATE object_comment SET object_id = ? WHERE object_id = ?",
+                               (restored_by_ext[ext], c["object_id"]))
+                else:
+                    db.execute("DELETE FROM object_comment WHERE object_id = ?", (c["object_id"],))
                 db.execute("DELETE FROM map_object WHERE id = ?", (c["object_id"],))
                 removed += 1
             else:

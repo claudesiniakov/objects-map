@@ -370,7 +370,8 @@ def object_dict(row) -> dict:
 
 OBJECT_SELECT = (
     "SELECT o.*, t.name AS type_name, t.code AS type_code, t.color AS type_color, t.icon AS type_icon,"
-    f" {effective_radius_sql()} AS effective_radius_m, b.file_name AS import_file, b.committed_at AS import_at"
+    f" {effective_radius_sql()} AS effective_radius_m, b.file_name AS import_file, b.committed_at AS import_at,"
+    " (SELECT COUNT(*) FROM object_comment c WHERE c.object_id = o.id) AS comments_count"
     " FROM map_object o JOIN object_type t ON t.id = o.type_id LEFT JOIN import_batch b ON b.id = o.import_id"
 )
 
@@ -386,8 +387,67 @@ def objects_details(body: DetailsIn, user=Depends(current_user), db=Depends(get_
     for i in range(0, len(body.ids), 900):
         part = body.ids[i:i + 900]
         out += [object_dict(r) for r in db.execute(OBJECT_SELECT + f" WHERE o.id IN ({','.join('?' * len(part))})", part)]
+    # В выгрузку попадают и комментарии — в скачанной карте они только для чтения.
+    by_id = {o["id"]: o for o in out}
+    for o in out:
+        o["comments"] = []
+    for i in range(0, len(body.ids), 900):
+        part = body.ids[i:i + 900]
+        for c in db.execute(f"SELECT * FROM object_comment WHERE object_id IN ({','.join('?' * len(part))}) ORDER BY id DESC", part):
+            if c["object_id"] in by_id:
+                by_id[c["object_id"]]["comments"].append(
+                    {"id": c["id"], "author": c["author"], "text": c["text"], "created_at": c["created_at"]})
     audit(db, user, "export_html", "map_object", None, {"objects": len(out)})
     return out
+
+
+class CommentIn(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("text")
+    @classmethod
+    def _text(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("Пустой комментарий")
+        return v
+
+
+def comment_dict(row, user) -> dict:
+    d = {k: row[k] for k in ("id", "object_id", "author", "user_login", "text", "created_at")}
+    d["can_delete"] = row["user_id"] == user["id"] or user["role"] == "admin"
+    return d
+
+
+@app.get("/api/objects/{object_id}/comments")
+def list_comments(object_id: int, user=Depends(current_user), db=Depends(get_db)):
+    row_or_404(db, "SELECT id FROM map_object WHERE id = ?", (object_id,))
+    rows = db.execute("SELECT * FROM object_comment WHERE object_id = ? ORDER BY id DESC", (object_id,)).fetchall()
+    return [comment_dict(r, user) for r in rows]
+
+
+@app.post("/api/objects/{object_id}/comments")
+def add_comment(object_id: int, body: CommentIn, user=Depends(current_user), db=Depends(get_db)):
+    obj = row_or_404(db, "SELECT id, name FROM map_object WHERE id = ?", (object_id,))
+    with tx(db):
+        cur = db.execute(
+            "INSERT INTO object_comment (object_id, user_id, user_login, author, text, created_at) VALUES (?,?,?,?,?,?)",
+            (object_id, user["id"], user["login"], user["full_name"] or user["login"], body.text, now()),
+        )
+        audit(db, user, "create", "object_comment", cur.lastrowid, {"object_id": object_id, "object": obj["name"], "text": body.text})
+    return comment_dict(db.execute("SELECT * FROM object_comment WHERE id = ?", (cur.lastrowid,)).fetchone(), user)
+
+
+@app.delete("/api/comments/{comment_id}")
+def delete_comment(comment_id: int, user=Depends(current_user), db=Depends(get_db)):
+    c = row_or_404(db, "SELECT * FROM object_comment WHERE id = ?", (comment_id,), "Комментарий")
+    if c["user_id"] != user["id"] and user["role"] != "admin":
+        raise HTTPException(403, "Удалить комментарий может его автор или администратор")
+    with tx(db):
+        db.execute("DELETE FROM object_comment WHERE id = ?", (comment_id,))
+        audit(db, user, "delete", "object_comment", comment_id,
+              {"object_id": c["object_id"], "author": c["author"], "text": c["text"]})
+    return {"ok": True}
 
 
 @app.get("/api/objects/{object_id}")
@@ -562,6 +622,7 @@ def update_object(object_id: int, body: ObjectIn, user=Depends(require("operator
 def delete_object(object_id: int, user=Depends(require("operator")), db=Depends(get_db)):
     before = object_dict(row_or_404(db, "SELECT * FROM map_object WHERE id = ?", (object_id,)))
     with tx(db):
+        db.execute("DELETE FROM object_comment WHERE object_id = ?", (object_id,))
         db.execute("DELETE FROM map_object WHERE id = ?", (object_id,))
         audit(db, user, "delete", "map_object", object_id, before)
     DataVersion.bump()
@@ -579,6 +640,7 @@ def bulk_delete(body: BulkIn, user=Depends(require("operator")), db=Depends(get_
         n = 0
         for chunk in range(0, len(body.ids), 900):
             part = body.ids[chunk:chunk + 900]
+            db.execute(f"DELETE FROM object_comment WHERE object_id IN ({','.join('?' * len(part))})", part)
             n += db.execute(f"DELETE FROM map_object WHERE id IN ({','.join('?' * len(part))})", part).rowcount
         audit(db, user, "bulk_delete", "map_object", None, {"ids": body.ids[:1000], "deleted": n})
     DataVersion.bump()

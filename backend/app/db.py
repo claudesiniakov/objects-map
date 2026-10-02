@@ -83,6 +83,19 @@ CREATE TABLE IF NOT EXISTS import_change (
 );
 CREATE INDEX IF NOT EXISTS idx_change_import ON import_change(import_id);
 
+-- Комментарии к объекту. Связь по object_id без каскада: при импорте в режиме «Заменить» объекты
+-- пересоздаются, и комментарии переносятся на новый объект с тем же внешним ID (importer.commit/rollback).
+CREATE TABLE IF NOT EXISTS object_comment (
+    id INTEGER PRIMARY KEY,
+    object_id INTEGER NOT NULL,
+    user_id INTEGER,
+    user_login TEXT,
+    author TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_comment_object ON object_comment(object_id, id);
+
 CREATE TABLE IF NOT EXISTS mapping_template (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,

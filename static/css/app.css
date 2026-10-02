@@ -274,9 +274,23 @@ label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--t
 
 /* карточка объекта у маркера */
 .card-popup .maplibregl-popup-content { padding: 14px 16px 12px; border-radius: var(--radius); box-shadow: var(--shadow); width: 360px; max-width: calc(100vw - 32px); }
-.card-popup .card-content { max-height: min(60vh, 520px); overflow-y: auto; padding-right: 4px; }
+.card-popup .card-content { max-height: min(calc(100vh - 160px), 560px); overflow-y: auto; padding-right: 4px; }
 .card-popup .maplibregl-popup-close-button { font-size: 20px; width: 28px; height: 28px; right: 4px; top: 4px; color: var(--muted); border-radius: 6px; }
 .card-popup .maplibregl-popup-close-button:hover { background: var(--bg); color: var(--text); }
 .card-popup .card-head { margin-bottom: 8px; }
 .card-popup .kv th, .card-popup .kv td { padding: 4px 0; font-size: 13px; }
 .card-popup .card-actions { margin-top: 10px; }
+
+/* комментарии в карточке */
+.comments { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.comments summary { cursor: pointer; font-weight: 600; font-size: 13px; padding: 2px 0; list-style-position: inside; }
+.comments summary:hover { color: var(--accent); }
+.comment-count { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 4px; border-radius: 10px; background: var(--bg); color: var(--muted); font-weight: 500; text-align: center; }
+.comment-form { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.comment-form textarea { font-size: 13px; resize: vertical; min-height: 44px; }
+.comment-form .btn { align-self: flex-end; }
+.comment-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.comment-list li { font-size: 13px; }
+.comment-meta { color: var(--muted); font-size: 12px; margin-bottom: 2px; }
+.comment-meta b { color: var(--text); font-weight: 600; }
+.comment-text { white-space: normal; word-break: break-word; }

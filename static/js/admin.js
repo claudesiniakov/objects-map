@@ -941,7 +941,7 @@ const AUDIT_ACTION = {
   bulk_delete: 'Массовое удаление', export_html: 'Выгрузка карты в HTML', bulk_type: 'Массовая смена типа', import: 'Импорт', rollback: 'Откат импорта', upload: 'Загрузка',
 };
 const AUDIT_ENTITY = {
-  user: 'Пользователь', map_object: 'Объект', object_type: 'Тип', import_batch: 'Импорт', settings: 'Настройки', icon: 'Иконка',
+  user: 'Пользователь', map_object: 'Объект', object_comment: 'Комментарий', object_type: 'Тип', import_batch: 'Импорт', settings: 'Настройки', icon: 'Иконка',
 };
 const auditState = { page: 1, entity: '' };
 

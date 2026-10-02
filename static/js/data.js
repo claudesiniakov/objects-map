@@ -12,6 +12,10 @@ const liveProvider = {
   object: (id) => api.get(`/api/objects/${id}`),
   search: (q) => api.get(`/api/search?q=${encodeURIComponent(q)}`),
   attributeValues: (name) => api.get(`/api/attribute-values?name=${encodeURIComponent(name)}`),
+  canComment: true,
+  comments: (id) => api.get(`/api/objects/${id}/comments`),
+  addComment: (id, text) => api.post(`/api/objects/${id}/comments`, { text }),
+  deleteComment: (commentId) => api.del(`/api/comments/${commentId}`),
 };
 
 /** Значение поля так же, как его показывает сервер в фильтрах (attr_text). */
@@ -85,6 +89,9 @@ function snapshotProvider(snap) {
         .sort(([a], [b]) => (a === null) - (b === null) || String(a).localeCompare(String(b), 'ru'))
         .map(([value, n]) => ({ value, objects: n }));
     },
+    // Комментарии в выгрузке — снимок на момент скачивания, только для чтения.
+    canComment: false,
+    comments: async (id) => (byId.get(id)?.comments || []).map((c) => ({ ...c, can_delete: false })),
     count: () => objects.length,
     nextId: () => objects.reduce((m, o) => Math.max(m, o.id), 0) + 1,
     rawTypes: () => types,
