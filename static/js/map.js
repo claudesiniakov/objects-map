@@ -212,7 +212,7 @@ function donutElement(props) {
     + (withCost ? `\nСтоимость: ${fmtCost(props.cost)}${props.cc < total ? ` (указана у ${fmtNum(props.cc)})` : ''}` : '')
     + `\n${parts.map((p) => `${p.t.name}: ${fmtNum(p.n)}`).join('\n')}`;
   el.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${paths}
-    <circle cx="${r}" cy="${r}" r="${r0}" class="cluster-core"/></svg><span>${shortCount(total)}</span>`
+    <circle cx="${r}" cy="${r}" r="${r0}" class="cluster-core"/></svg><span class="cluster-count">${shortCount(total)}</span>`
     + (withCost ? `<span class="cluster-cost">${fmtCost(props.cost)}</span>` : '');
   return el;
 }
