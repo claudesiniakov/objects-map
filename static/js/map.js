@@ -280,7 +280,7 @@ async function spiderfy(center, features) {
     markerDataUrl(t).then((url) => { el.src = url; });
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      openCard(f.properties.id);
+      openCard(f.properties.id, pos);
     });
     spider.push(new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(pos).addTo(map));
   });
@@ -294,50 +294,81 @@ function row(label, value) {
   return `<tr><th>${esc(label)}</th><td>${value}</td></tr>`;
 }
 
-async function openCard(id) {
-  const card = $('card');
-  const body = $('cardBody');
-  card.hidden = false;
-  body.innerHTML = '<p class="muted">Загрузка…</p>';
+// На широком экране карточка открывается всплывающим окном у маркера, на телефоне — нижней панелью.
+const narrowScreen = () => window.matchMedia('(max-width: 800px)').matches;
+let cardPopup;
+let cardSeq = 0;
+
+function closeCard() {
+  cardPopup?.remove();
+  $('card').hidden = true;
+}
+
+function cardHtml(o, icon) {
+  const radius = o.effective_radius_m
+    ? `${fmtNum(o.effective_radius_m)} м${o.radius_m ? '' : ' <span class="muted">(по типу)</span>'}`
+    : '';
+  const attrs = Object.entries(o.attributes || {}).map(([k, v]) => row(k, esc(v))).join('');
+  return `
+    <div class="card-head">
+      <img src="${icon}" alt="" class="card-icon">
+      <div><h2>${esc(o.name)}</h2><div class="muted">${esc(o.type_name)}</div></div>
+    </div>
+    <table class="kv">
+      ${row('ID', esc(o.external_id))}
+      ${row('Номер договора', esc(o.contract_number))}
+      ${row('Кадастровый номер', o.cadastral_number ? `<span class="mono">${esc(o.cadastral_number)}</span> <button class="link-btn" data-copy="${esc(o.cadastral_number)}">копировать</button>` : '')}
+      ${row('Адрес', esc(o.address))}
+      ${row('Координаты', `<span class="mono">${o.lat.toFixed(6)}, ${o.lon.toFixed(6)}</span> <button class="link-btn" data-copy="${o.lat}, ${o.lon}">копировать</button>`)}
+      ${row('Радиус', radius)}
+      ${row('Описание', esc(o.description).replace(/\n/g, '<br>'))}
+      ${attrs}
+      ${row('Источник', esc(o.source))}
+      ${row('Импорт', o.import_file ? `${esc(o.import_file)}, ${fmtDate(o.import_at)}` : '')}
+      ${row('Обновлён', fmtDate(o.updated_at))}
+    </table>
+    <div class="card-actions">
+      <button class="btn" data-zoom>Приблизить</button>
+      ${data.mode === 'live' && can('operator') ? `<a class="btn" href="/admin#objects/${o.id}">Редактировать</a>` : ''}
+    </div>`;
+}
+
+/** Открывает карточку объекта. at — точка привязки окна (для «веера» — место маркера в веере). */
+async function openCard(id, at) {
+  const seq = ++cardSeq;
+  const box = document.createElement('div');
+  box.className = 'card-content';
+  box.innerHTML = '<p class="muted">Загрузка…</p>';
+  const inPanel = narrowScreen();
+  closeCard();
+  hoverPopup?.remove();
+  if (inPanel) {
+    $('cardBody').replaceChildren(box);
+    $('card').hidden = false;
+  }
   try {
     const o = await data.object(id);
+    if (seq !== cardSeq) return; // пока грузилось, открыли другую карточку
     const t = state.typeById.get(o.type_id);
-    const icon = t ? await markerDataUrl(t) : '';
-    const radius = o.effective_radius_m
-      ? `${fmtNum(o.effective_radius_m)} м${o.radius_m ? '' : ' <span class="muted">(по типу)</span>'}`
-      : '';
-    const attrs = Object.entries(o.attributes || {}).map(([k, v]) => row(k, esc(v))).join('');
-    body.innerHTML = `
-      <div class="card-head">
-        <img src="${icon}" alt="" class="card-icon">
-        <div><h2>${esc(o.name)}</h2><div class="muted">${esc(o.type_name)}</div></div>
-      </div>
-      <table class="kv">
-        ${row('ID', esc(o.external_id))}
-        ${row('Номер договора', esc(o.contract_number))}
-        ${row('Кадастровый номер', o.cadastral_number ? `<span class="mono">${esc(o.cadastral_number)}</span> <button class="link-btn" data-copy="${esc(o.cadastral_number)}">копировать</button>` : '')}
-        ${row('Адрес', esc(o.address))}
-        ${row('Координаты', `<span class="mono">${o.lat.toFixed(6)}, ${o.lon.toFixed(6)}</span> <button class="link-btn" data-copy="${o.lat}, ${o.lon}">копировать</button>`)}
-        ${row('Радиус', radius)}
-        ${row('Описание', esc(o.description).replace(/\n/g, '<br>'))}
-        ${attrs}
-        ${row('Источник', esc(o.source))}
-        ${row('Импорт', o.import_file ? `${esc(o.import_file)}, ${fmtDate(o.import_at)}` : '')}
-        ${row('Обновлён', fmtDate(o.updated_at))}
-      </table>
-      <div class="card-actions">
-        <button class="btn" data-zoom>Приблизить</button>
-        ${data.mode === 'live' && can('operator') ? `<a class="btn" href="/admin#objects/${o.id}">Редактировать</a>` : ''}
-      </div>`;
-    body.querySelector('[data-zoom]').addEventListener('click', () => {
+    box.innerHTML = cardHtml(o, t ? await markerDataUrl(t) : '');
+    box.querySelector('[data-zoom]').addEventListener('click', () => {
       map.flyTo({ center: [o.lon, o.lat], zoom: Math.max(map.getZoom(), 16) });
     });
-    body.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', (e) => {
+    box.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', (e) => {
       navigator.clipboard?.writeText(e.target.dataset.copy);
       e.target.textContent = 'скопировано';
     }));
+    if (!inPanel) {
+      cardPopup = new maplibregl.Popup({ offset: [0, -38], maxWidth: '380px', className: 'card-popup', focusAfterOpen: false })
+        .setLngLat(at ?? [o.lon, o.lat])
+        .setDOMContent(box)
+        .addTo(map);
+    }
   } catch (e) {
-    body.innerHTML = `<p class="form-error">${esc(e.message)}</p>`;
+    box.innerHTML = `<p class="form-error">${esc(e.message)}</p>`;
+    if (!inPanel) {
+      cardPopup = new maplibregl.Popup({ offset: [0, -38], className: 'card-popup' }).setLngLat(at ?? map.getCenter()).setDOMContent(box).addTo(map);
+    }
   }
 }
 
@@ -676,6 +707,7 @@ async function init() {
   hoverPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: [0, -36], className: 'hover-popup' });
   map.on('mousemove', 'points', (e) => {
     map.getCanvas().style.cursor = 'pointer';
+    if (cardPopup?.isOpen()) return; // подсказка не перекрывает открытую карточку
     const f = e.features[0];
     const t = state.typeById.get(f.properties.t);
     hoverPopup.setLngLat(f.geometry.coordinates).setHTML(`<b>${esc(f.properties.n)}</b><br><span class="muted">${esc(t?.name)}</span>`).addTo(map);
@@ -714,7 +746,7 @@ async function init() {
   $('resetFilters').addEventListener('click', resetFilters);
   $('fitAll').addEventListener('click', fitAll);
   $('downloadBtn').addEventListener('click', (e) => downloadSnapshot(map, state, e.currentTarget));
-  $('cardClose').addEventListener('click', () => { $('card').hidden = true; });
+  $('cardClose').addEventListener('click', closeCard);
   $('panelToggle').addEventListener('click', () => document.body.classList.toggle('panel-open'));
   setupSearch();
 

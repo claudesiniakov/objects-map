@@ -113,7 +113,7 @@ label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--t
 .legend-name { flex: 1; }
 .legend-count { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
 .panel-actions .btn { width: 100%; }
-.panel-actions p { margin: 8px 0 0; }
+.panel-actions p { margin: 0; }
 
 .cluster { cursor: pointer; display: grid; place-items: center; }
 .cluster svg { position: absolute; inset: 0; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35)); }
@@ -260,7 +260,7 @@ label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--t
 }
 
 .filter-list { display: flex; flex-direction: column; gap: 10px; }
-.panel-actions .btn + .btn { margin-top: 8px; }
+.panel-actions { display: flex; flex-direction: column; gap: 8px; }
 .snapshot-info { padding: 3px 10px; border-radius: 12px; background: var(--warn-soft); color: var(--warn); font-size: 13px; cursor: help; }
 .loading-error { color: var(--bad); max-width: min(560px, 90vw); text-align: center; }
 .noscript-list { position: relative; z-index: 300; background: var(--surface); padding: 16px; }
@@ -271,3 +271,12 @@ label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--t
 .drop-overlay div { background: var(--surface); padding: 14px 22px; border-radius: var(--radius); box-shadow: var(--shadow); font-size: 15px; }
 .import-errors { max-height: 260px; overflow-y: auto; margin: 0; padding-left: 20px; font-size: 13px; }
 .legend-name .small { white-space: nowrap; }
+
+/* карточка объекта у маркера */
+.card-popup .maplibregl-popup-content { padding: 14px 16px 12px; border-radius: var(--radius); box-shadow: var(--shadow); width: 360px; max-width: calc(100vw - 32px); }
+.card-popup .card-content { max-height: min(60vh, 520px); overflow-y: auto; padding-right: 4px; }
+.card-popup .maplibregl-popup-close-button { font-size: 20px; width: 28px; height: 28px; right: 4px; top: 4px; color: var(--muted); border-radius: 6px; }
+.card-popup .maplibregl-popup-close-button:hover { background: var(--bg); color: var(--text); }
+.card-popup .card-head { margin-bottom: 8px; }
+.card-popup .kv th, .card-popup .kv td { padding: 4px 0; font-size: 13px; }
+.card-popup .card-actions { margin-top: 10px; }
