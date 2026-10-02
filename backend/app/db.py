@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS import_batch (
 CREATE TABLE IF NOT EXISTS map_object (
     id INTEGER PRIMARY KEY,
     external_id TEXT UNIQUE,
+    contract_number TEXT,
+    cadastral_number TEXT,
     type_id INTEGER NOT NULL REFERENCES object_type(id),
     name TEXT NOT NULL,
     address TEXT,
@@ -115,7 +117,7 @@ DEFAULT_SETTINGS = {
 }
 
 OBJECT_COLUMNS = (
-    "id", "external_id", "type_id", "name", "address", "lat", "lon", "radius_m",
+    "id", "external_id", "contract_number", "cadastral_number", "type_id", "name", "address", "lat", "lon", "radius_m",
     "description", "attributes", "source", "import_id", "search_text", "created_at", "updated_at",
 )
 
@@ -188,12 +190,28 @@ def audit(con, user, action: str, entity: str, entity_id=None, details=None):
     )
 
 
+# Колонки, добавленные после первого выпуска: в существующей базе их создаём ALTER TABLE.
+MIGRATIONS = {
+    "map_object": [("contract_number", "TEXT"), ("cadastral_number", "TEXT")],
+}
+
+
+def migrate(con):
+    for table, columns in MIGRATIONS.items():
+        have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns:
+            if name not in have:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_obj_cadastral ON map_object(cadastral_number)")
+
+
 def init_db():
     from .auth import hash_password
 
     con = connect()
     try:
         con.executescript(SCHEMA)
+        migrate(con)
         if con.execute("SELECT COUNT(*) FROM user").fetchone()[0] == 0:
             password = secrets.token_urlsafe(12)
             con.execute(

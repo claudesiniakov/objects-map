@@ -3,6 +3,8 @@
 
 const CSV_FIELDS = {
   external_id: ['id', 'ид', 'внешний id', 'внешний ид', 'код объекта', 'external_id'],
+  contract_number: ['номер договора', '№ договора', 'договор', 'договор №', 'номер контракта', 'contract', 'contract_number'],
+  cadastral_number: ['кадастровый номер', 'кадастровый №', 'кад. номер', 'кадастр', 'кн', 'cadastral_number', 'cadastral number'],
   type: ['тип', 'type', 'тип объекта', 'вид'],
   name: ['название', 'наименование', 'name', 'имя', 'объект'],
   lat: ['широта', 'lat', 'latitude', 'y', 'широта (lat)'],
@@ -152,6 +154,8 @@ export function csvToObjects(rows, types, nextId, fileName) {
     objects.push({
       id: nextId + objects.length,
       external_id: get('external_id') || null,
+      contract_number: get('contract_number') || null,
+      cadastral_number: get('cadastral_number') || null,
       type_id: t.id,
       name,
       address: get('address') || null,

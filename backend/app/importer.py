@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 import statistics
 from collections import Counter, OrderedDict
 from datetime import date, datetime
@@ -14,6 +15,8 @@ from .excel import read_table
 FIELDS = OrderedDict(
     [
         ("external_id", "ID"),
+        ("contract_number", "Номер договора"),
+        ("cadastral_number", "Кадастровый номер"),
         ("type", "Тип"),
         ("name", "Название"),
         ("lat", "Широта"),
@@ -24,10 +27,16 @@ FIELDS = OrderedDict(
     ]
 )
 REQUIRED = ("type", "name", "lat", "lon")
+# Кадастровый номер РФ: округ:район:квартал:участок, например 77:01:0001001:1234.
+CADASTRAL_RE = re.compile(r"^\d{2}:\d{2}:\d{6,7}:\d+$")
 MODES = ("add", "upsert", "replace")
 
 SYNONYMS = {
     "external_id": ["id", "ид", "внешний id", "внешний ид", "код объекта", "external_id"],
+    "contract_number": ["номер договора", "№ договора", "договор", "договор №", "номер контракта", "contract",
+                        "contract_number"],
+    "cadastral_number": ["кадастровый номер", "кадастровый №", "кад. номер", "кадастр", "кн", "cadastral_number",
+                         "cadastral number"],
     "type": ["тип", "type", "тип объекта", "вид"],
     "name": ["название", "наименование", "name", "имя", "объект"],
     "lat": ["широта", "lat", "latitude", "y", "широта (lat)"],
@@ -180,6 +189,10 @@ def validate(db, table: dict, mapping: dict, mode: str, source: str) -> dict:
                 errors.append(f"Неизвестный тип «{type_raw}»")
                 unknown_types[type_raw] += 1
 
+        cadastral = _text(col(values, "cadastral_number"))
+        if cadastral and not CADASTRAL_RE.match(cadastral):
+            warnings.append(f"Кадастровый номер «{cadastral}» не похож на формат 77:01:0001001:1234")
+
         address = _text(col(values, "address"))
         if lat is None or lon is None:
             if not any("Широта" in e or "Долгота" in e for e in errors):
@@ -217,6 +230,8 @@ def validate(db, table: dict, mapping: dict, mode: str, source: str) -> dict:
                 "warnings": warnings,
                 "data": {
                     "external_id": ext,
+                    "contract_number": _text(col(values, "contract_number")),
+                    "cadastral_number": cadastral,
                     "type_id": type_row["id"] if type_row else None,
                     "type_name": type_row["name"] if type_row else type_raw,
                     "name": name,
@@ -308,6 +323,8 @@ def preview_payload(result: dict, limit: int = 300) -> dict:
             "errors": r["errors"],
             "warnings": r["warnings"],
             "external_id": d["external_id"],
+            "contract_number": d["contract_number"],
+            "cadastral_number": d["cadastral_number"],
             "type_name": d["type_name"],
             "name": d["name"],
             "lat": d["lat"],
@@ -352,15 +369,16 @@ def commit(db, batch: dict, result: dict, user) -> dict:
             if r["action"] == "skip":
                 continue
             d = r["data"]
-            st = search_text(d["name"], d["address"], d["external_id"])
+            st = search_text(d["name"], d["address"], d["external_id"], d["contract_number"], d["cadastral_number"])
             attrs = json.dumps(d["attributes"], ensure_ascii=False)
             if r["action"] == "update":
                 before = db.execute("SELECT * FROM map_object WHERE id = ?", (r["object_id"],)).fetchone()
                 db.execute(
-                    "UPDATE map_object SET type_id=?, name=?, address=?, lat=?, lon=?, radius_m=?, description=?,"
-                    " attributes=?, source=?, import_id=?, search_text=?, updated_at=? WHERE id=?",
-                    (d["type_id"], d["name"], d["address"], d["lat"], d["lon"], d["radius_m"], d["description"],
-                     attrs, source, import_id, st, ts, r["object_id"]),
+                    "UPDATE map_object SET contract_number=?, cadastral_number=?, type_id=?, name=?, address=?, lat=?,"
+                    " lon=?, radius_m=?, description=?, attributes=?, source=?, import_id=?, search_text=?, updated_at=?"
+                    " WHERE id=?",
+                    (d["contract_number"], d["cadastral_number"], d["type_id"], d["name"], d["address"], d["lat"],
+                     d["lon"], d["radius_m"], d["description"], attrs, source, import_id, st, ts, r["object_id"]),
                 )
                 db.execute(
                     "INSERT INTO import_change (import_id, object_id, action, before) VALUES (?,?,?,?)",
@@ -369,10 +387,12 @@ def commit(db, batch: dict, result: dict, user) -> dict:
                 updated += 1
             else:
                 cur = db.execute(
-                    "INSERT INTO map_object (external_id, type_id, name, address, lat, lon, radius_m, description,"
-                    " attributes, source, import_id, search_text, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (d["external_id"], d["type_id"], d["name"], d["address"], d["lat"], d["lon"], d["radius_m"],
-                     d["description"], attrs, source, import_id, st, ts, ts),
+                    "INSERT INTO map_object (external_id, contract_number, cadastral_number, type_id, name, address, lat,"
+                    " lon, radius_m, description, attributes, source, import_id, search_text, created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (d["external_id"], d["contract_number"], d["cadastral_number"], d["type_id"], d["name"],
+                     d["address"], d["lat"], d["lon"], d["radius_m"], d["description"], attrs, source, import_id, st,
+                     ts, ts),
                 )
                 db.execute(
                     "INSERT INTO import_change (import_id, object_id, action) VALUES (?,?,?)",

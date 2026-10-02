@@ -51,7 +51,7 @@ function snapshotProvider(snap) {
         a: attrNames.map((name) => attrText(o.attributes?.[name])),
       },
     }));
-    searchText = new Map(objects.map((o) => [o.id, [o.name, o.address, o.external_id].filter(Boolean).join(' ').toLowerCase()]));
+    searchText = new Map(objects.map((o) => [o.id, [o.name, o.address, o.external_id, o.contract_number, o.cadastral_number].filter(Boolean).join(' ').toLowerCase()]));
     typeCounts = countBy(objects, (o) => o.type_id);
   }
   reindex();

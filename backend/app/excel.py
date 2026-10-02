@@ -12,8 +12,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 from .config import MAX_ROWS
 
-TEMPLATE_HEADERS = ["ID", "Тип", "Название", "Широта", "Долгота", "Адрес", "Радиус, м", "Описание"]
-TEMPLATE_FIELDS = ["external_id", "type", "name", "lat", "lon", "address", "radius_m", "description"]
+TEMPLATE_HEADERS = ["ID", "Номер договора", "Кадастровый номер", "Тип", "Название", "Широта", "Долгота", "Адрес",
+                    "Радиус, м", "Описание"]
 
 
 class TableError(ValueError):
@@ -134,7 +134,8 @@ def build_template(types: list[dict]) -> bytes:
     ws.title = "Объекты"
     _header_row(ws, TEMPLATE_HEADERS)
     example_type = types[0]["name"] if types else ""
-    ws.append(["OBJ-0001", example_type, "Пример объекта", 55.751244, 37.618423, "Москва, ул. Тверская, 1", 500, ""])
+    ws.append(["OBJ-0001", "Д-2026/015", "77:01:0001001:1234", example_type, "Пример объекта", 55.751244, 37.618423,
+               "Москва, ул. Тверская, 1", 500, ""])
     tw = wb.create_sheet("Типы")
     _header_row(tw, ["Код", "Название", "Есть радиус", "Радиус по умолчанию, м"])
     for t in types:
@@ -144,12 +145,13 @@ def build_template(types: list[dict]) -> bytes:
         dv.error = "Выберите тип из справочника (лист «Типы»)"
         dv.errorTitle = "Неизвестный тип"
         ws.add_data_validation(dv)
-        dv.add("B2:B100000")
+        dv.add("D2:D100000")
     help_ws = wb.create_sheet("Инструкция")
     for line in [
         "Обязательные колонки: Тип, Название, Широта, Долгота.",
         "Координаты — десятичные градусы WGS-84 (например 55,751244). Разделитель — точка или запятая.",
         "ID — внешний идентификатор; нужен для режима «Обновить / добавить».",
+        "Номер договора и кадастровый номер — текст; кадастровый номер в формате 77:01:0001001:1234.",
         "Радиус, м — целое число от 1 до 100 000; учитывается только для типов с зоной. Пусто — радиус типа.",
         "Любые другие колонки сохраняются как дополнительные поля и видны в карточке объекта.",
     ]:
@@ -180,7 +182,8 @@ def build_export(objects: list[dict]) -> bytes:
     _header_row(ws, TEMPLATE_HEADERS + attr_keys)
     for o in objects:
         ws.append(
-            [o["external_id"], o["type_name"], o["name"], o["lat"], o["lon"], o["address"], o["radius_m"], o["description"]]
+            [o["external_id"], o["contract_number"], o["cadastral_number"], o["type_name"], o["name"], o["lat"],
+             o["lon"], o["address"], o["radius_m"], o["description"]]
             + [_cell(o["attributes"].get(k)) for k in attr_keys]
         )
     _autosize(ws)

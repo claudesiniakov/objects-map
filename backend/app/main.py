@@ -399,7 +399,8 @@ def get_object(object_id: int, user=Depends(current_user), db=Depends(get_db)):
 def search(q: str = Query(min_length=1), user=Depends(current_user), db=Depends(get_db)):
     like = f"%{q.strip().lower()}%"
     rows = db.execute(
-        "SELECT o.id, o.name, o.address, o.lat, o.lon, o.type_id, t.name AS type_name FROM map_object o"
+        "SELECT o.id, o.name, o.address, o.cadastral_number, o.contract_number, o.lat, o.lon, o.type_id,"
+        " t.name AS type_name FROM map_object o"
         " JOIN object_type t ON t.id = o.type_id WHERE o.search_text LIKE ? ORDER BY o.name LIMIT 20",
         (like,),
     ).fetchall()
@@ -419,6 +420,8 @@ def sources(user=Depends(current_user), db=Depends(get_db)):
 
 class ObjectIn(BaseModel):
     external_id: str | None = None
+    contract_number: str | None = Field(default=None, max_length=100)
+    cadastral_number: str | None = Field(default=None, max_length=100)
     type_id: int
     name: str = Field(min_length=1, max_length=500)
     address: str | None = None
@@ -429,7 +432,7 @@ class ObjectIn(BaseModel):
     attributes: dict = {}
     source: str | None = None
 
-    @field_validator("external_id", "address", "description", "source")
+    @field_validator("external_id", "contract_number", "cadastral_number", "address", "description", "source")
     @classmethod
     def _blank(cls, v):
         if v is None:
@@ -446,25 +449,28 @@ def _save_object(db, body: ObjectIn, object_id=None):
         if clash:
             raise HTTPException(409, f"ID «{body.external_id}» уже занят другим объектом")
     ts = now()
-    vals = (body.external_id, body.type_id, body.name.strip(), body.address, body.lat, body.lon, body.radius_m,
-            body.description, json.dumps(body.attributes, ensure_ascii=False), body.source,
-            search_text(body.name, body.address, body.external_id))
+    vals = (body.external_id, body.contract_number, body.cadastral_number, body.type_id, body.name.strip(),
+            body.address, body.lat, body.lon, body.radius_m, body.description,
+            json.dumps(body.attributes, ensure_ascii=False), body.source,
+            search_text(body.name, body.address, body.external_id, body.contract_number, body.cadastral_number))
     if object_id is None:
         cur = db.execute(
-            "INSERT INTO map_object (external_id, type_id, name, address, lat, lon, radius_m, description, attributes,"
-            " source, search_text, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO map_object (external_id, contract_number, cadastral_number, type_id, name, address, lat, lon,"
+            " radius_m, description, attributes, source, search_text, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             vals + (ts, ts),
         )
         return cur.lastrowid
     db.execute(
-        "UPDATE map_object SET external_id=?, type_id=?, name=?, address=?, lat=?, lon=?, radius_m=?, description=?,"
-        " attributes=?, source=?, search_text=?, updated_at=? WHERE id=?",
+        "UPDATE map_object SET external_id=?, contract_number=?, cadastral_number=?, type_id=?, name=?, address=?,"
+        " lat=?, lon=?, radius_m=?, description=?, attributes=?, source=?, search_text=?, updated_at=? WHERE id=?",
         vals + (ts, object_id),
     )
     return object_id
 
 
 SORTABLE = {"id": "o.id", "name": "o.name", "type": "t.name", "external_id": "o.external_id",
+            "contract_number": "o.contract_number", "cadastral_number": "o.cadastral_number",
             "updated_at": "o.updated_at", "source": "o.source", "radius_m": "o.radius_m"}
 
 

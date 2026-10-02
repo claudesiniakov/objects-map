@@ -314,6 +314,8 @@ async function openCard(id) {
       </div>
       <table class="kv">
         ${row('ID', esc(o.external_id))}
+        ${row('Номер договора', esc(o.contract_number))}
+        ${row('Кадастровый номер', o.cadastral_number ? `<span class="mono">${esc(o.cadastral_number)}</span> <button class="link-btn" data-copy="${esc(o.cadastral_number)}">копировать</button>` : '')}
         ${row('Адрес', esc(o.address))}
         ${row('Координаты', `<span class="mono">${o.lat.toFixed(6)}, ${o.lon.toFixed(6)}</span> <button class="link-btn" data-copy="${o.lat}, ${o.lon}">копировать</button>`)}
         ${row('Радиус', radius)}
@@ -330,10 +332,10 @@ async function openCard(id) {
     body.querySelector('[data-zoom]').addEventListener('click', () => {
       map.flyTo({ center: [o.lon, o.lat], zoom: Math.max(map.getZoom(), 16) });
     });
-    body.querySelector('[data-copy]')?.addEventListener('click', (e) => {
+    body.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', (e) => {
       navigator.clipboard?.writeText(e.target.dataset.copy);
       e.target.textContent = 'скопировано';
-    });
+    }));
   } catch (e) {
     body.innerHTML = `<p class="form-error">${esc(e.message)}</p>`;
   }
@@ -354,7 +356,7 @@ function setupSearch() {
       const items = await data.search(q);
       list.innerHTML = items.length
         ? items.map((o) => `<li><button data-id="${o.id}" data-lon="${o.lon}" data-lat="${o.lat}" data-type="${o.type_id}">
-            <b>${esc(o.name)}</b><span class="muted small">${esc(o.type_name)}${o.address ? ` · ${esc(o.address)}` : ''}</span></button></li>`).join('')
+            <b>${esc(o.name)}</b><span class="muted small">${esc(o.type_name)}${o.address ? ` · ${esc(o.address)}` : ''}${o.cadastral_number ? ` · КН ${esc(o.cadastral_number)}` : ''}${o.contract_number ? ` · договор ${esc(o.contract_number)}` : ''}</span></button></li>`).join('')
         : '<li class="muted empty">Ничего не найдено</li>';
       list.hidden = false;
     } catch (e) {
