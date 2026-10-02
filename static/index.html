@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Карта объектов</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%231e88e5' d='M12 2C7.6 2 4 5.6 4 10c0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8z'/%3E%3Ccircle cx='12' cy='10' r='3' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="map-page">
+  <header class="topbar">
+    <button class="icon-btn panel-toggle" id="panelToggle" aria-label="Слои и фильтры">☰</button>
+    <a class="brand" href="/">Карта объектов</a>
+    <div class="search" id="search">
+      <input type="search" id="searchInput" placeholder="Поиск по названию, адресу, ID" autocomplete="off">
+      <ul class="search-results" id="searchResults" hidden></ul>
+    </div>
+    <nav class="topnav">
+      <a href="/admin" id="adminLink" hidden>Панель управления</a>
+      <span class="user" id="userName"></span>
+      <button class="link-btn" id="logoutBtn">Выйти</button>
+    </nav>
+  </header>
+
+  <aside class="sidepanel" id="sidepanel">
+    <section>
+      <div class="section-head">
+        <h2>Типы объектов</h2>
+        <span class="small-links"><button class="link-btn" id="allTypes">все</button> · <button class="link-btn" id="noTypes">ни одного</button></span>
+      </div>
+      <ul class="legend" id="legend"></ul>
+    </section>
+    <section>
+      <h2>Слои</h2>
+      <label class="check"><input type="checkbox" id="zonesToggle" checked> Зоны (радиусы)</label>
+    </section>
+    <section>
+      <h2>Источник</h2>
+      <select id="sourceSelect"><option value="">Все источники</option></select>
+    </section>
+    <section class="panel-actions">
+      <button class="btn" id="fitAll">Показать все объекты</button>
+      <p class="muted small" id="stats"></p>
+    </section>
+  </aside>
+
+  <main id="map" aria-label="Карта"></main>
+
+  <aside class="card" id="card" hidden>
+    <button class="icon-btn card-close" id="cardClose" aria-label="Закрыть">×</button>
+    <div id="cardBody"></div>
+  </aside>
+
+  <div class="loading" id="loading">Загрузка объектов…</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script type="module" src="/js/map.js"></script>
+</body>
+</html>

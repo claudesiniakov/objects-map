@@ -1,0 +1,8 @@
+[Unit]
+Description=Карта объектов — резервная копия базы
+
+[Service]
+Type=oneshot
+User=objmap
+Environment=OBJMAP_DATA_DIR=/var/lib/objects-map
+ExecStart=/usr/bin/python3 /var/www/objects-map/deploy/backup.py

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Панель управления</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%231e88e5' d='M12 2C7.6 2 4 5.6 4 10c0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8z'/%3E%3Ccircle cx='12' cy='10' r='3' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="admin-page">
+  <header class="topbar">
+    <a class="brand" href="/">Карта объектов</a>
+    <span class="topbar-sub">Панель управления</span>
+    <nav class="topnav">
+      <a href="/">← К карте</a>
+      <button class="link-btn user" id="userName" title="Сменить пароль"></button>
+      <button class="link-btn" id="logoutBtn">Выйти</button>
+    </nav>
+  </header>
+  <nav class="tabs" id="tabs">
+    <a href="#import" data-tab="import">Импорт</a>
+    <a href="#objects" data-tab="objects">Объекты</a>
+    <a href="#types" data-tab="types">Типы</a>
+    <a href="#users" data-tab="users" data-role="admin">Пользователи</a>
+    <a href="#settings" data-tab="settings" data-role="admin">Настройки</a>
+    <a href="#audit" data-tab="audit">Журнал</a>
+  </nav>
+  <main class="admin-main" id="view"></main>
+
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script type="module" src="/js/admin.js"></script>
+</body>
+</html>

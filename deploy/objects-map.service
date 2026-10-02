@@ -1,0 +1,20 @@
+[Unit]
+Description=Карта объектов — API (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=objmap
+Group=objmap
+WorkingDirectory=/var/www/objects-map/backend
+Environment=OBJMAP_DATA_DIR=/var/lib/objects-map
+ExecStart=/var/www/objects-map/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8092 --workers 1 --proxy-headers
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/objects-map
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
