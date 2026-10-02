@@ -1,4 +1,5 @@
-// Импорт объектов из CSV в скачанной HTML-странице (без сервера).
+// Импорт объектов из CSV и GeoJSON в скачанной HTML-странице (без сервера).
+import { GeometryError, areaM2, labelPoint, parseGeometry } from './geo.js';
 // Колонки — как в шаблоне импорта сервиса; остальные колонки становятся дополнительными полями.
 
 const CSV_FIELDS = {
@@ -8,8 +9,9 @@ const CSV_FIELDS = {
   cost: ['стоимость', 'стоимость, тыс. руб.', 'стоимость, тыс. руб', 'стоимость (тыс. руб.)', 'стоимость тыс. руб.', 'стоимость тыс руб', 'стоимость, тыс.', 'цена', 'cost'],
   type: ['тип', 'type', 'тип объекта', 'вид'],
   name: ['название', 'наименование', 'name', 'имя', 'объект'],
-  lat: ['широта', 'lat', 'latitude', 'y', 'широта (lat)'],
-  lon: ['долгота', 'lon', 'lng', 'long', 'longitude', 'x', 'долгота (lon)'],
+  lat: ['широта', 'lat', 'latitude', 'y', 'широта (lat)', 'широта (центр)'],
+  lon: ['долгота', 'lon', 'lng', 'long', 'longitude', 'x', 'долгота (lon)', 'долгота (центр)'],
+  geometry: ['геометрия (geojson)', 'геометрия', 'geometry', 'geojson', 'контур'],
   address: ['адрес', 'address', 'местоположение'],
   radius_m: ['радиус', 'радиус, м', 'радиус (м)', 'радиус м', 'radius', 'radius_m', 'радиус зоны'],
   description: ['описание', 'description', 'комментарий', 'примечание'],
@@ -91,7 +93,8 @@ export function csvToObjects(rows, types, nextId, fileName) {
     if (field) col[field] = i;
     else attrCols.push([i, h]);
   });
-  const missing = ['name', 'lat', 'lon'].filter((f) => !(f in col));
+  // С колонкой геометрии координаты не обязательны — маркер ставится посередине полигона.
+  const missing = ['name', 'lat', 'lon'].filter((f) => !(f in col) && !(f !== 'name' && 'geometry' in col));
   if (missing.length) {
     const names = { name: 'Название', lat: 'Широта', lon: 'Долгота' };
     throw new Error(`Нет обязательных колонок: ${missing.map((f) => names[f]).join(', ')}`);
@@ -127,9 +130,17 @@ export function csvToObjects(rows, types, nextId, fileName) {
     if (!r.some((c) => c.trim() !== '')) return;
     const get = (f) => (f in col ? (r[col[f]] ?? '').trim() : '');
     const name = get('name');
-    const lat = num(get('lat'));
-    const lon = num(get('lon'));
+    let lat = num(get('lat'));
+    let lon = num(get('lon'));
     const problems = [];
+    let geometry = null;
+    try {
+      geometry = parseGeometry(get('geometry'));
+    } catch (e) {
+      if (!(e instanceof GeometryError)) throw e;
+      problems.push(`геометрия: ${e.message}`);
+    }
+    if (geometry && (lat === null || lon === null)) [lat, lon] = labelPoint(geometry);
     if (!name) problems.push('нет названия');
     if (lat === null || lon === null) problems.push('нет координат');
     else if (Number.isNaN(lat) || Number.isNaN(lon)) problems.push('координаты не числа');
@@ -172,6 +183,8 @@ export function csvToObjects(rows, types, nextId, fileName) {
       description: get('description') || null,
       attributes,
       source: get('source') || null,
+      geometry,
+      area_m2: geometry ? Math.round(areaM2(geometry) * 10) / 10 : null,
       import_file: fileName || null,
       import_at: now,
       updated_at: now,
@@ -181,7 +194,8 @@ export function csvToObjects(rows, types, nextId, fileName) {
   const byType = new Map([...types, ...newTypes].map((t) => [t.id, t]));
   for (const o of objects) {
     const t = byType.get(o.type_id);
-    o.effective_radius_m = t.has_radius ? (o.radius_m || t.default_radius_m || null) : null;
+    // У полигона своя площадь: радиус типа по умолчанию к нему не применяется (как на сервере).
+    o.effective_radius_m = t.has_radius ? (o.radius_m || (o.geometry ? null : t.default_radius_m) || null) : null;
   }
   return { objects, newTypes, errors, columns: headers };
 }

@@ -4,7 +4,7 @@
 import { api, confirmDialog, fmtNum, session, toast } from './api.js';
 import { iconUrl } from './icons.js';
 
-const BUNDLE = ['/js/api.js', '/js/icons.js', '/js/csv.js', '/js/data.js', '/js/download.js', '/js/map.js'];
+const BUNDLE = ['/js/api.js', '/js/icons.js', '/js/geo.js', '/js/csv.js', '/js/data.js', '/js/download.js', '/js/map.js'];
 const LARGE = 20000;
 
 async function fetchText(url) {

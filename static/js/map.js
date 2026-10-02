@@ -1,5 +1,6 @@
 import { can, confirmDialog, debounce, esc, fail, fmtCost, fmtDate, fmtNum, logout, modal, plural, toast } from './api.js';
 import { csvToObjects, parseCsv, readCsvFile } from './csv.js';
+import { geojsonToRows } from './geo.js';
 import { createProvider } from './data.js';
 import { downloadSnapshot } from './download.js';
 import { markerCanvas, markerDataUrl } from './icons.js';
@@ -158,7 +159,7 @@ function renderLegend() {
   }
   const shown = state.filtered.length;
   $('stats').textContent = data.mode === 'snapshot' && !state.all.features.length
-    ? 'Объектов нет — нажмите «Импорт CSV» или перетащите CSV-файл в окно'
+    ? 'Объектов нет — нажмите «Импорт CSV / GeoJSON» или перетащите файл в окно'
     : `На карте ${fmtNum(shown)} из ${fmtNum(state.all.features.length)} объектов${costSummary()}`;
 }
 
@@ -1069,7 +1070,7 @@ function renderSources(sources) {
 
 function askImportMode(fileName, count, existing) {
   return new Promise((resolve) => {
-    const m = modal('Импорт CSV', `<p>В файле «${esc(fileName)}» объектов: <b>${fmtNum(count)}</b>.
+    const m = modal('Импорт', `<p>В файле «${esc(fileName)}» объектов: <b>${fmtNum(count)}</b>.
       Сейчас на карте ${fmtNum(existing)}. Что сделать?</p>
       <p class="muted small">«Добавить» обновляет объекты с тем же ID и добавляет новые.</p>`, {
       actions: [
@@ -1082,9 +1083,11 @@ function askImportMode(fileName, count, existing) {
   });
 }
 
-function showImportReport(fileName, result, unknownTypes) {
+function showImportReport(fileName, result, unknownTypes, isGeo = false) {
   const { objects, errors } = result;
-  const list = errors.slice(0, 200).map((e) => `<li>Строка ${e.row}: ${esc(e.message)}</li>`).join('');
+  // В CSV — номер строки как в Excel; в GeoJSON строк нет — номер объекта в файле (строка 1 — заголовки).
+  const where = (e) => (isGeo ? `Объект ${e.row - 1}` : `Строка ${e.row}`);
+  const list = errors.slice(0, 200).map((e) => `<li>${where(e)}: ${esc(e.message)}</li>`).join('');
   modal('Импорт завершён', `
     <p>Из «${esc(fileName)}» загружено объектов: <b>${fmtNum(objects.length)}</b>.</p>
     ${unknownTypes.length ? `<p>Типов нет в справочнике, показаны серым: ${unknownTypes.map((t) => `«${esc(t.name)}»`).join(', ')}.</p>` : ''}
@@ -1095,15 +1098,17 @@ function showImportReport(fileName, result, unknownTypes) {
 }
 
 async function importCsv(file) {
-  if (!/\.(csv|txt)$/i.test(file.name)) {
-    toast('Нужен файл CSV', 'error');
+  const isGeo = /\.(geo)?json$/i.test(file.name);
+  if (!isGeo && !/\.(csv|txt)$/i.test(file.name)) {
+    toast('Нужен файл CSV или GeoJSON', 'error');
     return;
   }
   try {
-    const rows = parseCsv(await readCsvFile(file));
+    const text = await readCsvFile(file);
+    const rows = isGeo ? geojsonToRows(text) : parseCsv(text);
     const result = csvToObjects(rows, data.rawTypes(), data.nextId(), file.name);
     if (!result.objects.length) {
-      showImportReport(file.name, result, []);
+      showImportReport(file.name, result, [], isGeo);
       return;
     }
     let mode = 'replace';
@@ -1125,12 +1130,12 @@ async function importCsv(file) {
     await renderAttrFilters();
     applyFilter();
     fitAll();
-    $('snapshotInfo').textContent = `${$('snapshotInfo').textContent.split(' · ')[0]} · CSV: ${file.name}`;
+    $('snapshotInfo').textContent = `${$('snapshotInfo').textContent.split(' · ')[0]} · файл: ${file.name}`;
     const unknown = state.types.filter((t) => t.unknown && result.newTypes.some((n) => n.id === t.id));
-    if (result.errors.length || unknown.length) showImportReport(file.name, result, unknown);
+    if (result.errors.length || unknown.length) showImportReport(file.name, result, unknown, isGeo);
     else toast(`Загружено объектов: ${fmtNum(result.objects.length)}`, 'success');
   } catch (e) {
-    toast(`Не удалось загрузить CSV: ${e.message}`, 'error', 8000);
+    toast(`Не удалось загрузить ${isGeo ? 'GeoJSON' : 'CSV'}: ${e.message}`, 'error', 8000);
   }
 }
 
