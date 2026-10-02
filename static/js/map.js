@@ -1,4 +1,4 @@
-import { can, confirmDialog, debounce, esc, fail, fmtDate, fmtNum, logout, modal, toast } from './api.js';
+import { can, confirmDialog, debounce, esc, fail, fmtCost, fmtDate, fmtNum, logout, modal, toast } from './api.js';
 import { csvToObjects, parseCsv, readCsvFile } from './csv.js';
 import { createProvider } from './data.js';
 import { downloadSnapshot } from './download.js';
@@ -89,6 +89,18 @@ async function loadObjects() {
   state.all = await data.objects();
 }
 
+function costSummary() {
+  let sum = 0;
+  let n = 0;
+  for (const f of state.filtered) {
+    if (typeof f.properties.c === 'number') {
+      sum += f.properties.c;
+      n += 1;
+    }
+  }
+  return n ? ` · стоимость ${fmtCost(sum)}` : '';
+}
+
 function renderLegend() {
   const counts = new Map();
   for (const f of state.all.features) {
@@ -114,7 +126,7 @@ function renderLegend() {
   const shown = state.filtered.length;
   $('stats').textContent = data.mode === 'snapshot' && !state.all.features.length
     ? 'Объектов нет — нажмите «Импорт CSV» или перетащите CSV-файл в окно'
-    : `На карте ${fmtNum(shown)} из ${fmtNum(state.all.features.length)} объектов`;
+    : `На карте ${fmtNum(shown)} из ${fmtNum(state.all.features.length)} объектов${costSummary()}`;
 }
 
 // ---------------------------------------------------------------- зоны
@@ -147,6 +159,14 @@ function updateZones() {
 }
 
 // ---------------------------------------------------------------- кластеры
+
+function plural(n, one, few, many) {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
 
 function clusterBucket(n) {
   if (n < 10) return { size: 36, cls: 'c-small' };
@@ -187,9 +207,13 @@ function donutElement(props) {
   el.className = `cluster ${cls}`;
   el.style.width = `${size}px`;
   el.style.height = `${size}px`;
-  el.title = `${fmtNum(total)} объектов\n${parts.map((p) => `${p.t.name}: ${fmtNum(p.n)}`).join('\n')}`;
+  const withCost = props.cc > 0;
+  el.title = `${fmtNum(total)} ${plural(total, 'объект', 'объекта', 'объектов')}`
+    + (withCost ? `\nСтоимость: ${fmtCost(props.cost)}${props.cc < total ? ` (указана у ${fmtNum(props.cc)})` : ''}` : '')
+    + `\n${parts.map((p) => `${p.t.name}: ${fmtNum(p.n)}`).join('\n')}`;
   el.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${paths}
-    <circle cx="${r}" cy="${r}" r="${r0}" class="cluster-core"/></svg><span>${shortCount(total)}</span>`;
+    <circle cx="${r}" cy="${r}" r="${r0}" class="cluster-core"/></svg><span>${shortCount(total)}</span>`
+    + (withCost ? `<span class="cluster-cost">${fmtCost(props.cost)}</span>` : '');
   return el;
 }
 
@@ -361,6 +385,7 @@ function cardHtml(o, icon) {
       ${row('ID', o.external_id ? copyable(esc(o.external_id), o.external_id) : '')}
       ${row('Номер договора', o.contract_number ? copyable(esc(o.contract_number), o.contract_number) : '')}
       ${row('Кадастровый номер', o.cadastral_number ? copyable(esc(o.cadastral_number), o.cadastral_number) : '')}
+      ${row('Стоимость', o.cost != null ? `${o.cost.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} тыс. ₽${o.cost >= 1000 ? ` <span class="muted">(${fmtCost(o.cost)})</span>` : ''}` : '')}
       ${row('Адрес', esc(o.address))}
       ${row('Координаты', copyable(`${o.lat.toFixed(6)}, ${o.lon.toFixed(6)}`, `${o.lat}, ${o.lon}`))}
       ${row('Радиус', radius)}
@@ -940,6 +965,9 @@ function setupObjectsSource() {
   clearClusterMarkers();
   const clusterProperties = {};
   for (const t of state.types) clusterProperties[`t_${t.id}`] = ['+', ['case', ['==', ['get', 't'], t.id], 1, 0]];
+  const hasCost = ['==', ['typeof', ['get', 'c']], 'number'];
+  clusterProperties.cost = ['+', ['case', hasCost, ['get', 'c'], 0]]; // сумма стоимости, тыс. руб.
+  clusterProperties.cc = ['+', ['case', hasCost, 1, 0]]; // сколько объектов со стоимостью
   map.addSource('objects', {
     type: 'geojson',
     data: EMPTY,

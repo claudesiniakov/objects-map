@@ -65,13 +65,13 @@ function noscriptTable(doc, objects, types, attrNames) {
   const h = doc.createElement('h1');
   h.textContent = `Объекты выгрузки (${objects.length}) — для карты откройте файл в браузере с включённым JavaScript`;
   const table = doc.createElement('table');
-  const head = ['Название', 'Тип', 'ID', 'Номер договора', 'Кадастровый номер', 'Адрес', 'Широта', 'Долгота', 'Радиус, м', ...attrNames];
+  const head = ['Название', 'Тип', 'ID', 'Номер договора', 'Кадастровый номер', 'Стоимость, тыс. руб.', 'Адрес', 'Широта', 'Долгота', 'Радиус, м', ...attrNames];
   table.innerHTML = `<thead><tr>${head.map(() => '<th></th>').join('')}</tr></thead><tbody></tbody>`;
   table.querySelectorAll('th').forEach((th, i) => { th.textContent = head[i]; });
   const body = table.querySelector('tbody');
   for (const o of objects) {
     const tr = doc.createElement('tr');
-    for (const v of [o.name, typeName.get(o.type_id), o.external_id, o.contract_number, o.cadastral_number, o.address, o.lat, o.lon, o.effective_radius_m,
+    for (const v of [o.name, typeName.get(o.type_id), o.external_id, o.contract_number, o.cadastral_number, o.cost, o.address, o.lat, o.lon, o.effective_radius_m,
       ...attrNames.map((n) => o.attributes?.[n])]) {
       const td = doc.createElement('td');
       td.textContent = v ?? '';

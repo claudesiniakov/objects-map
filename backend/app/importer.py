@@ -17,6 +17,7 @@ FIELDS = OrderedDict(
         ("external_id", "ID"),
         ("contract_number", "Номер договора"),
         ("cadastral_number", "Кадастровый номер"),
+        ("cost", "Стоимость, тыс. руб."),
         ("type", "Тип"),
         ("name", "Название"),
         ("lat", "Широта"),
@@ -37,6 +38,8 @@ SYNONYMS = {
                         "contract_number"],
     "cadastral_number": ["кадастровый номер", "кадастровый №", "кад. номер", "кадастр", "кн", "cadastral_number",
                          "cadastral number"],
+    "cost": ["стоимость", "стоимость, тыс. руб.", "стоимость, тыс. руб", "стоимость (тыс. руб.)", "стоимость тыс. руб.",
+             "стоимость тыс руб", "стоимость, тыс.", "цена", "cost"],
     "type": ["тип", "type", "тип объекта", "вид"],
     "name": ["название", "наименование", "name", "имя", "объект"],
     "lat": ["широта", "lat", "latitude", "y", "широта (lat)"],
@@ -157,7 +160,14 @@ def validate(db, table: dict, mapping: dict, mode: str, source: str) -> dict:
         ext = _text(col(values, "external_id"))
         name = _text(col(values, "name"))
         type_raw = _text(col(values, "type"))
-        lat = lon = radius = None
+        lat = lon = radius = cost = None
+        try:
+            cost = _num(col(values, "cost"))
+            if cost is not None and cost < 0:
+                errors.append(f"Стоимость {col(values, 'cost')} — отрицательная")
+                cost = None
+        except ValueError:
+            errors.append(f"Стоимость «{col(values, 'cost')}» — не число (тыс. руб.)")
         try:
             lat = _num(col(values, "lat"))
         except ValueError:
@@ -232,6 +242,7 @@ def validate(db, table: dict, mapping: dict, mode: str, source: str) -> dict:
                     "external_id": ext,
                     "contract_number": _text(col(values, "contract_number")),
                     "cadastral_number": cadastral,
+                    "cost": cost,
                     "type_id": type_row["id"] if type_row else None,
                     "type_name": type_row["name"] if type_row else type_raw,
                     "name": name,
@@ -325,6 +336,7 @@ def preview_payload(result: dict, limit: int = 300) -> dict:
             "external_id": d["external_id"],
             "contract_number": d["contract_number"],
             "cadastral_number": d["cadastral_number"],
+            "cost": d["cost"],
             "type_name": d["type_name"],
             "name": d["name"],
             "lat": d["lat"],
@@ -379,10 +391,11 @@ def commit(db, batch: dict, result: dict, user) -> dict:
                 before = db.execute("SELECT * FROM map_object WHERE id = ?", (r["object_id"],)).fetchone()
                 db.execute(
                     "UPDATE map_object SET contract_number=?, cadastral_number=?, type_id=?, name=?, address=?, lat=?,"
-                    " lon=?, radius_m=?, description=?, attributes=?, source=?, import_id=?, search_text=?, updated_at=?"
-                    " WHERE id=?",
+                    " lon=?, radius_m=?, description=?, attributes=?, source=?, import_id=?, search_text=?, updated_at=?,"
+                    " cost=? WHERE id=?",
                     (d["contract_number"], d["cadastral_number"], d["type_id"], d["name"], d["address"], d["lat"],
-                     d["lon"], d["radius_m"], d["description"], attrs, source, import_id, st, ts, r["object_id"]),
+                     d["lon"], d["radius_m"], d["description"], attrs, source, import_id, st, ts, d["cost"],
+                     r["object_id"]),
                 )
                 db.execute(
                     "INSERT INTO import_change (import_id, object_id, action, before) VALUES (?,?,?,?)",
@@ -392,11 +405,11 @@ def commit(db, batch: dict, result: dict, user) -> dict:
             else:
                 cur = db.execute(
                     "INSERT INTO map_object (external_id, contract_number, cadastral_number, type_id, name, address, lat,"
-                    " lon, radius_m, description, attributes, source, import_id, search_text, created_at, updated_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " lon, radius_m, description, attributes, source, import_id, search_text, created_at, updated_at, cost)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (d["external_id"], d["contract_number"], d["cadastral_number"], d["type_id"], d["name"],
                      d["address"], d["lat"], d["lon"], d["radius_m"], d["description"], attrs, source, import_id, st,
-                     ts, ts),
+                     ts, ts, d["cost"]),
                 )
                 db.execute(
                     "INSERT INTO import_change (import_id, object_id, action) VALUES (?,?,?)",

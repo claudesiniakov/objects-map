@@ -57,7 +57,7 @@ function snapshotProvider(snap) {
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [o.lon, o.lat] },
       properties: {
-        id: o.id, t: o.type_id, n: o.name, s: o.source, r: o.effective_radius_m,
+        id: o.id, t: o.type_id, n: o.name, s: o.source, r: o.effective_radius_m, c: o.cost ?? null,
         a: attrNames.map((name) => attrText(o.attributes?.[name])),
       },
     }));

@@ -335,3 +335,7 @@ label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--t
 .pin-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pin-del { border: 0; background: none; color: var(--muted); font-size: 18px; line-height: 1; width: 24px; height: 24px; border-radius: 6px; cursor: pointer; flex: none; }
 .pin-del:hover { background: var(--bad-soft); color: var(--bad); }
+
+/* сумма стоимости под кластером */
+.cluster-cost { position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%); white-space: nowrap; padding: 1px 7px; border-radius: 10px; background: rgba(29, 39, 51, 0.85); color: #fff; font-size: 11px; font-weight: 600; pointer-events: none; }
+.cluster span.cluster-cost { color: #fff; font-size: 11px; }

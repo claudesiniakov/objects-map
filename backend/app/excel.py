@@ -13,7 +13,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from .config import MAX_ROWS
 
 TEMPLATE_HEADERS = ["ID", "Номер договора", "Кадастровый номер", "Тип", "Название", "Широта", "Долгота", "Адрес",
-                    "Радиус, м", "Описание"]
+                    "Радиус, м", "Стоимость, тыс. руб.", "Описание"]
 
 
 class TableError(ValueError):
@@ -135,7 +135,7 @@ def build_template(types: list[dict]) -> bytes:
     _header_row(ws, TEMPLATE_HEADERS)
     example_type = types[0]["name"] if types else ""
     ws.append(["OBJ-0001", "Д-2026/015", "77:01:0001001:1234", example_type, "Пример объекта", 55.751244, 37.618423,
-               "Москва, ул. Тверская, 1", 500, ""])
+               "Москва, ул. Тверская, 1", 500, 12500.5, ""])
     tw = wb.create_sheet("Типы")
     _header_row(tw, ["Код", "Название", "Есть радиус", "Радиус по умолчанию, м"])
     for t in types:
@@ -152,6 +152,7 @@ def build_template(types: list[dict]) -> bytes:
         "Координаты — десятичные градусы WGS-84 (например 55,751244). Разделитель — точка или запятая.",
         "ID — внешний идентификатор; нужен для режима «Обновить / добавить».",
         "Номер договора и кадастровый номер — текст; кадастровый номер в формате 77:01:0001001:1234.",
+        "Стоимость, тыс. руб. — число не меньше 0, можно дробное (12500,5 = 12,5 млн руб.).",
         "Радиус, м — целое число от 1 до 100 000; учитывается только для типов с зоной. Пусто — радиус типа.",
         "Любые другие колонки сохраняются как дополнительные поля и видны в карточке объекта.",
     ]:
@@ -183,7 +184,7 @@ def build_export(objects: list[dict]) -> bytes:
     for o in objects:
         ws.append(
             [o["external_id"], o["contract_number"], o["cadastral_number"], o["type_name"], o["name"], o["lat"],
-             o["lon"], o["address"], o["radius_m"], o["description"]]
+             o["lon"], o["address"], o["radius_m"], o["cost"], o["description"]]
             + [_cell(o["attributes"].get(k)) for k in attr_keys]
         )
     _autosize(ws)

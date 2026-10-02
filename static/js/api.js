@@ -239,6 +239,15 @@ export function fmtDate(iso) {
   return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** Стоимость в тыс. руб. → «850 тыс. ₽», «12,4 млн ₽», «1,25 млрд ₽». */
+export function fmtCost(thousands) {
+  const v = Number(thousands) || 0;
+  const f = (x) => x.toLocaleString('ru-RU', { maximumFractionDigits: x < 10 ? 2 : 1 });
+  if (v >= 1e6) return `${f(v / 1e6)} млрд ₽`;
+  if (v >= 1e3) return `${f(v / 1e3)} млн ₽`;
+  return `${f(v)} тыс. ₽`;
+}
+
 export function fmtNum(n) {
   return (n ?? 0).toLocaleString('ru-RU');
 }

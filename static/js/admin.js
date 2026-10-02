@@ -476,7 +476,7 @@ async function renderObjects(editId) {
 }
 
 const OBJ_COLUMNS = [
-  ['external_id', 'ID'], ['contract_number', 'Договор'], ['cadastral_number', 'Кадастровый №'], ['name', 'Название'], ['type', 'Тип'], [null, 'Адрес'], [null, 'Координаты'],
+  ['external_id', 'ID'], ['contract_number', 'Договор'], ['cadastral_number', 'Кадастровый №'], ['name', 'Название'], ['cost', 'Стоимость, тыс. ₽'], ['type', 'Тип'], [null, 'Адрес'], [null, 'Координаты'],
   ['radius_m', 'Радиус, м'], ['source', 'Источник'], ['updated_at', 'Обновлён'],
 ];
 
@@ -503,7 +503,7 @@ async function loadObjectsTable() {
           : `<th>${label}</th>`)).join('')}</tr></thead>
       <tbody>${items.map((o, i) => `<tr data-id="${o.id}">
         <td><input type="checkbox" data-sel="${o.id}" ${objState.selected.has(o.id) ? 'checked' : ''}></td>
-        <td>${esc(o.external_id)}</td><td>${esc(o.contract_number)}</td><td class="mono small nowrap">${esc(o.cadastral_number)}</td><td><b>${esc(o.name)}</b></td>
+        <td>${esc(o.external_id)}</td><td>${esc(o.contract_number)}</td><td class="mono small nowrap">${esc(o.cadastral_number)}</td><td><b>${esc(o.name)}</b></td><td class="num nowrap">${o.cost != null ? o.cost.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) : ''}</td>
         <td class="nowrap"><img src="${icons[i]}" class="tiny-icon" alt=""> ${esc(o.type_name)}</td>
         <td>${esc(o.address)}</td><td class="mono small nowrap">${o.lat.toFixed(5)}, ${o.lon.toFixed(5)}</td>
         <td class="num">${o.effective_radius_m ? fmtNum(o.effective_radius_m) : ''}${o.effective_radius_m && !o.radius_m ? '<span class="muted">*</span>' : ''}</td>
@@ -581,6 +581,7 @@ async function editObject(id) {
         <label>ID (внешний)<input name="external_id" value="${esc(o.external_id)}"></label>
         <label>Номер договора<input name="contract_number" value="${esc(o.contract_number)}" maxlength="100"></label>
         <label>Кадастровый номер<input name="cadastral_number" value="${esc(o.cadastral_number)}" maxlength="100" placeholder="77:01:0001001:1234"></label>
+        <label>Стоимость, тыс. руб.<input name="cost" value="${o.cost ?? ''}" inputmode="decimal" placeholder="например 12500,5"></label>
         <label>Источник<input name="source" value="${esc(o.source)}"></label>
         <label>Широта *<input name="lat" value="${o.lat ?? ''}" inputmode="decimal" required></label>
         <label>Долгота *<input name="lon" value="${o.lon ?? ''}" inputmode="decimal" required></label>
@@ -614,13 +615,18 @@ async function editObject(id) {
           const f = w.querySelector('#objForm');
           if (!f.reportValidity()) return false;
           const fd = new FormData(f);
-          const num = (v) => (String(v).trim() === '' ? null : Number(String(v).replace(',', '.')));
+          const num = (v) => (String(v).trim() === '' ? null : Number(String(v).replace(/[\s\u00a0]/g, '').replace(',', '.')));
           const body = {
             name: fd.get('name'), type_id: Number(fd.get('type_id')), external_id: fd.get('external_id'),
             contract_number: fd.get('contract_number'), cadastral_number: fd.get('cadastral_number'),
+            cost: num(fd.get('cost')),
             source: fd.get('source'), lat: num(fd.get('lat')), lon: num(fd.get('lon')), radius_m: num(fd.get('radius_m')),
             address: fd.get('address'), description: fd.get('description'), attributes: textToAttrs(fd.get('attributes')),
           };
+          if (Number.isNaN(body.cost) || body.cost < 0) {
+            toast('Стоимость — число тыс. руб., не меньше 0', 'error');
+            return false;
+          }
           if (body.lat === null || body.lon === null || Number.isNaN(body.lat) || Number.isNaN(body.lon)) {
             toast('Укажите координаты числами', 'error');
             return false;

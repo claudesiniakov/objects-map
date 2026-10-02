@@ -298,7 +298,7 @@ def map_objects(
     user=Depends(current_user),
     db=Depends(get_db),
 ):
-    """Объекты в формате GeoJSON. Компактные свойства: id, t — тип, n — название, r — радиус, s — источник,
+    """Объекты в формате GeoJSON. Компактные свойства: id, t — тип, n — название, r — радиус, s — источник, c — стоимость (тыс. руб.),
     a — значения полей из настройки filter_attributes (в том же порядке)."""
     key = (DataVersion.value, bbox, types, source)
     cached = _map_cache.get(key)
@@ -320,15 +320,15 @@ def map_objects(
         if source:
             where.append("o.source = ?")
             params.append(source)
-        sql = (f"SELECT o.id, o.type_id, o.name, o.lat, o.lon, o.source, {effective_radius_sql()} AS r{attr_sql}"
+        sql = (f"SELECT o.id, o.type_id, o.name, o.lat, o.lon, o.source, {effective_radius_sql()} AS r, o.cost{attr_sql}"
                " FROM map_object o JOIN object_type t ON t.id = o.type_id")
         if where:
             sql += " WHERE " + " AND ".join(where)
         feats = []
         for r in db.execute(sql, params):
-            props = {"id": r[0], "t": r[1], "n": r[2], "s": r[5], "r": r[6]}
+            props = {"id": r[0], "t": r[1], "n": r[2], "s": r[5], "r": r[6], "c": r[7]}
             if attrs:
-                props["a"] = [attr_text(v) for v in r[7:]]
+                props["a"] = [attr_text(v) for v in r[8:]]
             feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [r[4], r[3]]},
                           "properties": props})
         cached = json.dumps({"type": "FeatureCollection", "features": feats}, ensure_ascii=False,
@@ -614,6 +614,7 @@ class ObjectIn(BaseModel):
     external_id: str | None = None
     contract_number: str | None = Field(default=None, max_length=100)
     cadastral_number: str | None = Field(default=None, max_length=100)
+    cost: float | None = Field(default=None, ge=0, description="Стоимость, тыс. руб.")
     type_id: int
     name: str = Field(min_length=1, max_length=500)
     address: str | None = None
@@ -648,21 +649,22 @@ def _save_object(db, body: ObjectIn, object_id=None):
     if object_id is None:
         cur = db.execute(
             "INSERT INTO map_object (external_id, contract_number, cadastral_number, type_id, name, address, lat, lon,"
-            " radius_m, description, attributes, source, search_text, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            vals + (ts, ts),
+            " radius_m, description, attributes, source, search_text, created_at, updated_at, cost)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            vals + (ts, ts, body.cost),
         )
         return cur.lastrowid
     db.execute(
         "UPDATE map_object SET external_id=?, contract_number=?, cadastral_number=?, type_id=?, name=?, address=?,"
-        " lat=?, lon=?, radius_m=?, description=?, attributes=?, source=?, search_text=?, updated_at=? WHERE id=?",
-        vals + (ts, object_id),
+        " lat=?, lon=?, radius_m=?, description=?, attributes=?, source=?, search_text=?, updated_at=?, cost=?"
+        " WHERE id=?",
+        vals + (ts, body.cost, object_id),
     )
     return object_id
 
 
 SORTABLE = {"id": "o.id", "name": "o.name", "type": "t.name", "external_id": "o.external_id",
-            "contract_number": "o.contract_number", "cadastral_number": "o.cadastral_number",
+            "contract_number": "o.contract_number", "cadastral_number": "o.cadastral_number", "cost": "o.cost",
             "updated_at": "o.updated_at", "source": "o.source", "radius_m": "o.radius_m"}
 
 

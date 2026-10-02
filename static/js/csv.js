@@ -5,6 +5,7 @@ const CSV_FIELDS = {
   external_id: ['id', 'ид', 'внешний id', 'внешний ид', 'код объекта', 'external_id'],
   contract_number: ['номер договора', '№ договора', 'договор', 'договор №', 'номер контракта', 'contract', 'contract_number'],
   cadastral_number: ['кадастровый номер', 'кадастровый №', 'кад. номер', 'кадастр', 'кн', 'cadastral_number', 'cadastral number'],
+  cost: ['стоимость', 'стоимость, тыс. руб.', 'стоимость, тыс. руб', 'стоимость (тыс. руб.)', 'стоимость тыс. руб.', 'стоимость тыс руб', 'стоимость, тыс.', 'цена', 'cost'],
   type: ['тип', 'type', 'тип объекта', 'вид'],
   name: ['название', 'наименование', 'name', 'имя', 'объект'],
   lat: ['широта', 'lat', 'latitude', 'y', 'широта (lat)'],
@@ -142,6 +143,11 @@ export function csvToObjects(rows, types, nextId, fileName) {
       errors.push({ row: rowNo, message: `радиус «${get('radius_m')}» не учтён (нужно целое 1–${MAX_RADIUS_M})` });
       radius = null;
     }
+    let cost = num(get('cost'));
+    if (cost !== null && !(cost >= 0)) {
+      errors.push({ row: rowNo, message: `стоимость «${get('cost')}» не учтена (нужно число тыс. руб. ≥ 0)` });
+      cost = null;
+    }
     const t = typeFor(get('type'));
     if (t.unknown && radius) {
       t.has_radius = true; // у неизвестного типа зона рисуется по радиусу из файла
@@ -156,6 +162,7 @@ export function csvToObjects(rows, types, nextId, fileName) {
       external_id: get('external_id') || null,
       contract_number: get('contract_number') || null,
       cadastral_number: get('cadastral_number') || null,
+      cost,
       type_id: t.id,
       name,
       address: get('address') || null,
