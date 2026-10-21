@@ -3,6 +3,7 @@
 set -e
 DEPLOY_DIR="/var/www/objects-map"
 BRANCH="main"
+NGINX_BACKUP_DIR="/var/backups/nginx"
 
 while read oldrev newrev refname; do
   branch=$(git rev-parse --symbolic --abbrev-ref "$refname")
@@ -23,6 +24,13 @@ while read oldrev newrev refname; do
     systemctl daemon-reload
     systemctl restart objects-map
     if ! cmp -s deploy/nginx.conf /etc/nginx/sites-available/objects-map; then
+      # Конфиг на сервере могли поправить вручную — сохраняем его перед перезаписью (последние 20 копий)
+      if [ -f /etc/nginx/sites-available/objects-map ]; then
+        mkdir -p "$NGINX_BACKUP_DIR"
+        cp -p /etc/nginx/sites-available/objects-map "$NGINX_BACKUP_DIR/objects-map.$(date +%Y%m%d-%H%M%S)"
+        ls -1t "$NGINX_BACKUP_DIR"/objects-map.* | tail -n +21 | xargs -r rm -f
+        echo "==> nginx config differed; old copy saved to $NGINX_BACKUP_DIR"
+      fi
       cp deploy/nginx.conf /etc/nginx/sites-available/objects-map
       nginx -t && systemctl reload nginx
     fi
