@@ -6,6 +6,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -19,12 +20,15 @@ from .auth import (check_password, client_ip, current_user, hash_password, login
 from .config import ICON_DIR, IMPORT_DIR, MAX_RADIUS_M, MAX_UPLOAD_MB
 from .db import DataVersion, audit, get_db, get_settings, init_db, now, search_text, tx
 
-app = FastAPI(title="Карта объектов", docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
 
-
-@app.on_event("startup")
-def _startup():
+@asynccontextmanager
+async def _lifespan(app):
     init_db()
+    yield
+
+
+app = FastAPI(title="Карта объектов", docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None,
+              lifespan=_lifespan)
 
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

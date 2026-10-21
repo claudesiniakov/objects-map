@@ -16,13 +16,18 @@ LOGIN_WINDOW_S = 600
 LOGIN_MAX_FAILS = 10
 
 
+def _pw_bytes(password: str) -> bytes:
+    # bcrypt учитывает только первые 72 байта; bcrypt>=5 на длинных паролях падает вместо обрезки
+    return password.encode()[:72]
+
+
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(_pw_bytes(password), bcrypt.gensalt()).decode()
 
 
 def check_password(password: str, hashed: str) -> bool:
     try:
-        return bcrypt.checkpw(password.encode(), hashed.encode())
+        return bcrypt.checkpw(_pw_bytes(password), hashed.encode())
     except ValueError:
         return False
 
