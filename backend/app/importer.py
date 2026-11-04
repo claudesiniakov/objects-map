@@ -9,9 +9,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .config import IMPORT_DIR, MAX_RADIUS_M
-from .db import DataVersion, audit, now, search_text, tx
+from .db import DataVersion, audit, next_object_id, now, search_text, tx
 from .excel import read_table
 from .geo import GeometryError, dumps as geometry_dumps, label_point, parse_geometry
+from . import rollback as rollback_guard
 
 FIELDS = OrderedDict(
     [
@@ -387,6 +388,18 @@ def commit(db, batch: dict, result: dict, user) -> dict:
     import_id = batch["id"]
     added = updated = deleted = 0
     with tx(db):
+        current = db.execute("SELECT * FROM import_batch WHERE id=?", (import_id,)).fetchone()
+        if current is None or current["status"] != "checked" or any(
+            current[k] != batch[k] for k in ("mode", "source", "sheet", "mapping")
+        ):
+            raise rollback_guard.RollbackConflict("import_stale", "Импорт уже выполнен или его параметры изменились; повторите проверку")
+        for r in result["rows"]:
+            if r["action"] == "update":
+                target = db.execute("SELECT external_id FROM map_object WHERE id=?", (r["object_id"],)).fetchone()
+                if target is None or target[0] != r["data"]["external_id"]:
+                    raise rollback_guard.RollbackConflict("import_stale", "Объекты изменились; повторите проверку импорта")
+        # Never alias old IDs: comments for removed objects may outlive multiple imports.
+        next_id = next_object_id(db)
         old_by_ext = {}  # внешний ID → id удаляемого объекта, чтобы перенести комментарии на новый
         created_by_ext = {}
         if batch["mode"] == "replace":
@@ -423,10 +436,10 @@ def commit(db, batch: dict, result: dict, user) -> dict:
                 updated += 1
             else:
                 cur = db.execute(
-                    "INSERT INTO map_object (external_id, contract_number, cadastral_number, type_id, name, address, lat,"
+                    "INSERT INTO map_object (id, external_id, contract_number, cadastral_number, type_id, name, address, lat,"
                     " lon, radius_m, description, attributes, source, import_id, search_text, created_at, updated_at, cost,"
-                    " geometry) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (d["external_id"], d["contract_number"], d["cadastral_number"], d["type_id"], d["name"],
+                    " geometry) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (next_id, d["external_id"], d["contract_number"], d["cadastral_number"], d["type_id"], d["name"],
                      d["address"], d["lat"], d["lon"], d["radius_m"], d["description"], attrs, source, import_id, st,
                      ts, ts, d["cost"], geom),
                 )
@@ -437,13 +450,14 @@ def commit(db, batch: dict, result: dict, user) -> dict:
                 if d["external_id"]:
                     created_by_ext[d["external_id"]] = cur.lastrowid
                 added += 1
+                next_id += 1
         for ext, new_id in created_by_ext.items():
             if ext in old_by_ext:
                 db.execute("UPDATE object_comment SET object_id = ? WHERE object_id = ?", (new_id, old_by_ext[ext]))
         errors = result["counts"]["skip"]
         db.execute(
-            "UPDATE import_batch SET status='committed', added=?, updated=?, deleted=?, errors=?, committed_at=? WHERE id=?",
-            (added, updated, deleted, errors, ts, import_id),
+            "UPDATE import_batch SET status='committed', added=?, updated=?, deleted=?, errors=?, committed_at=?, rollback_baseline=? WHERE id=?",
+            (added, updated, deleted, errors, ts, rollback_guard.capture(db, import_id), import_id),
         )
         audit(db, user, "import", "import_batch", import_id,
               {"file": batch["file_name"], "mode": batch["mode"], "source": source,
@@ -455,9 +469,7 @@ def commit(db, batch: dict, result: dict, user) -> dict:
 def rollback(db, batch: dict, user) -> dict:
     restored = removed = 0
     with tx(db):
-        changes = db.execute(
-            "SELECT * FROM import_change WHERE import_id = ? ORDER BY id DESC", (batch["id"],)
-        ).fetchall()
+        batch, changes = rollback_guard.check(db, batch["id"])
         # Объекты, удалённые этим импортом (режим «Заменить»): комментарии возвращаются к ним по внешнему ID.
         restored_by_ext = {}
         for c in changes:
@@ -465,6 +477,7 @@ def rollback(db, batch: dict, user) -> dict:
                 before = json.loads(c["before"])
                 if before.get("external_id"):
                     restored_by_ext[before["external_id"]] = before["id"]
+        # Delete all created rows before restoring snapshots; no REPLACE may evict a different row.
         for c in changes:
             if c["action"] == "created":
                 row = db.execute("SELECT external_id FROM map_object WHERE id = ?", (c["object_id"],)).fetchone()
@@ -476,17 +489,23 @@ def rollback(db, batch: dict, user) -> dict:
                     db.execute("DELETE FROM object_comment WHERE object_id = ?", (c["object_id"],))
                 db.execute("DELETE FROM map_object WHERE id = ?", (c["object_id"],))
                 removed += 1
-            else:
+        for c in changes:
+            if c["action"] != "created":
                 before = json.loads(c["before"])
                 if before.get("import_id") is not None and not db.execute(
                     "SELECT 1 FROM import_batch WHERE id = ?", (before["import_id"],)
                 ).fetchone():
                     before["import_id"] = None
                 cols = list(before.keys())
-                db.execute(
-                    f"INSERT OR REPLACE INTO map_object ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
-                    [before[k] for k in cols],
-                )
+                if c["action"] == "updated":
+                    fields = [k for k in cols if k != "id"]
+                    db.execute(f"UPDATE map_object SET {', '.join(k+'=?' for k in fields)} WHERE id=?",
+                               [before[k] for k in fields] + [before["id"]])
+                else:
+                    db.execute(
+                        f"INSERT INTO map_object ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                        [before[k] for k in cols],
+                    )
                 restored += 1
         db.execute("UPDATE import_batch SET status='rolled_back', rolled_back_at=? WHERE id=?", (now(), batch["id"]))
         audit(db, user, "rollback", "import_batch", batch["id"],

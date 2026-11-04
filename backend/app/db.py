@@ -198,6 +198,18 @@ def search_text(*parts) -> str:
     return " ".join(str(p) for p in parts if p).lower()
 
 
+def next_object_id(con) -> int:
+    """Reserve identities still referenced by history or comments, including legacy orphan comments.
+
+    Call while holding the write transaction. An empty live table does not mean old IDs are free.
+    """
+    return con.execute(
+        "SELECT MAX(COALESCE((SELECT MAX(id) FROM map_object), 0), "
+        "COALESCE((SELECT MAX(object_id) FROM object_revision), 0), "
+        "COALESCE((SELECT MAX(object_id) FROM object_comment), 0)) + 1"
+    ).fetchone()[0]
+
+
 def get_settings(con) -> dict:
     out = dict(DEFAULT_SETTINGS)
     for row in con.execute("SELECT key, value FROM settings"):
@@ -223,6 +235,7 @@ def audit(con, user, action: str, entity: str, entity_id=None, details=None):
 # Колонки, добавленные после первого выпуска: в существующей базе их создаём ALTER TABLE.
 MIGRATIONS = {
     "map_object": [("contract_number", "TEXT"), ("cadastral_number", "TEXT"), ("cost", "REAL"), ("geometry", "TEXT")],
+    "import_batch": [("rollback_baseline", "TEXT")],
 }
 
 
@@ -233,6 +246,21 @@ def migrate(con):
             if name not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
     con.execute("CREATE INDEX IF NOT EXISTS idx_obj_cadastral ON map_object(cadastral_number)")
+    # Tombstones survive deletion/recreation of an ID. Timestamps cannot detect same-second writes,
+    # same-value updates, or comment changes. Do not backfill historical import baselines here.
+    con.execute("CREATE TABLE IF NOT EXISTS object_revision (object_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)")
+    for table, key in (("map_object", "id"), ("object_comment", "object_id")):
+        for event in ("INSERT", "UPDATE", "DELETE"):
+            refs = [f"NEW.{key}"] if event == "INSERT" else [f"OLD.{key}"]
+            body = []
+            for ref in refs:
+                body.append(f"INSERT INTO object_revision VALUES ({ref}, 1) "
+                            "ON CONFLICT(object_id) DO UPDATE SET revision=revision+1;")
+            if event == "UPDATE":
+                body.append(f"INSERT INTO object_revision SELECT NEW.{key}, 1 WHERE NEW.{key} != OLD.{key} "
+                            "ON CONFLICT(object_id) DO UPDATE SET revision=revision+1;")
+            con.execute(f"CREATE TRIGGER IF NOT EXISTS revision_{table}_{event.lower()} AFTER {event} ON {table} "
+                        f"BEGIN {' '.join(body)} END")
 
 
 def init_db():

@@ -138,7 +138,8 @@ async function renderHistory() {
         <td class="num">${fmtNum(b.added)}</td><td class="num">${fmtNum(b.updated)}</td><td class="num">${fmtNum(b.deleted)}</td>
         <td class="num">${b.errors ? `<button class="link-btn" data-errors="${b.id}">${fmtNum(b.errors)}</button>` : '0'}</td>
         <td><span class="badge ${b.status}">${STATUS_TEXT[b.status] || b.status}${b.rolled_back_at ? ` ${fmtDate(b.rolled_back_at)}` : ''}</span></td>
-        <td>${b.can_rollback ? `<button class="btn small danger" data-rollback="${b.id}">Откатить</button>` : ''}</td>
+        <td>${b.can_rollback ? `<button class="btn small danger" data-rollback="${b.id}">Откатить</button>` :
+          (b.rollback_unavailable_reason ? `<span class="muted">${esc(b.rollback_unavailable_reason)}</span>` : '')}</td>
       </tr>`).join('')}</tbody></table>`;
     box.onclick = async (e) => {
       const t = e.target;
@@ -148,7 +149,7 @@ async function renderHistory() {
         if (t.dataset.rollback) {
           const b = items.find((i) => i.id === Number(t.dataset.rollback));
           const ok = await confirmDialog('Откатить импорт?',
-            `Импорт «${b.file_name}» будет отменён: добавленные им объекты (${b.added}) удалятся, обновлённые (${b.updated}) и удалённые (${b.deleted}) вернутся к прежнему состоянию.`,
+            `Импорт «${b.file_name}» будет отменён: добавленные им объекты (${b.added}) удалятся, обновлённые (${b.updated}) и удалённые (${b.deleted}) вернутся к прежнему состоянию. Если после импорта затронутые объекты или комментарии изменились, откат будет отменён целиком без изменения данных.`,
             'Откатить');
           if (!ok) return;
           const res = await api.post(`/api/import/${b.id}/rollback`);

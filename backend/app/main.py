@@ -14,11 +14,11 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
-from . import excel, geo, importer
+from . import excel, geo, importer, rollback as rollback_guard
 from .auth import (check_password, client_ip, current_user, hash_password, login_blocked, make_token,
                    register_failed_login, require)
 from .config import ICON_DIR, IMPORT_DIR, MAX_RADIUS_M, MAX_UPLOAD_MB
-from .db import DataVersion, audit, get_db, get_settings, init_db, now, search_text, tx
+from .db import DataVersion, audit, get_db, get_settings, init_db, next_object_id, now, search_text, tx
 
 
 @asynccontextmanager
@@ -459,22 +459,23 @@ def list_comments(object_id: int, user=Depends(current_user), db=Depends(get_db)
 
 @app.post("/api/objects/{object_id}/comments")
 def add_comment(object_id: int, body: CommentIn, user=Depends(current_user), db=Depends(get_db)):
-    obj = row_or_404(db, "SELECT id, name FROM map_object WHERE id = ?", (object_id,))
     with tx(db):
+        obj = row_or_404(db, "SELECT id, name FROM map_object WHERE id = ?", (object_id,))
         cur = db.execute(
             "INSERT INTO object_comment (object_id, user_id, user_login, author, text, created_at) VALUES (?,?,?,?,?,?)",
             (object_id, user["id"], user["login"], user["full_name"] or user["login"], body.text, now()),
         )
         audit(db, user, "create", "object_comment", cur.lastrowid, {"object_id": object_id, "object": obj["name"], "text": body.text})
-    return comment_dict(db.execute("SELECT * FROM object_comment WHERE id = ?", (cur.lastrowid,)).fetchone(), user)
+        result = comment_dict(db.execute("SELECT * FROM object_comment WHERE id = ?", (cur.lastrowid,)).fetchone(), user)
+    return result
 
 
 @app.delete("/api/comments/{comment_id}")
 def delete_comment(comment_id: int, user=Depends(current_user), db=Depends(get_db)):
-    c = row_or_404(db, "SELECT * FROM object_comment WHERE id = ?", (comment_id,), "Комментарий")
-    if c["user_id"] != user["id"] and user["role"] != "admin":
-        raise HTTPException(403, "Удалить комментарий может его автор или администратор")
     with tx(db):
+        c = row_or_404(db, "SELECT * FROM object_comment WHERE id = ?", (comment_id,), "Комментарий")
+        if c["user_id"] != user["id"] and user["role"] != "admin":
+            raise HTTPException(403, "Удалить комментарий может его автор или администратор")
         db.execute("DELETE FROM object_comment WHERE id = ?", (comment_id,))
         audit(db, user, "delete", "object_comment", comment_id,
               {"object_id": c["object_id"], "author": c["author"], "text": c["text"]})
@@ -696,10 +697,10 @@ def _save_object_fields(db, body: ObjectIn, object_id=None):
             search_text(body.name, body.address, body.external_id, body.contract_number, body.cadastral_number))
     if object_id is None:
         cur = db.execute(
-            "INSERT INTO map_object (external_id, contract_number, cadastral_number, type_id, name, address, lat, lon,"
+            "INSERT INTO map_object (id, external_id, contract_number, cadastral_number, type_id, name, address, lat, lon,"
             " radius_m, description, attributes, source, search_text, created_at, updated_at, cost)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            vals + (ts, ts, body.cost),
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (next_object_id(db),) + vals + (ts, ts, body.cost),
         )
         return cur.lastrowid
     db.execute(
@@ -790,20 +791,21 @@ def create_object(body: ObjectIn, user=Depends(require("operator")), db=Depends(
 
 @app.put("/api/objects/{object_id}")
 def update_object(object_id: int, body: ObjectIn, user=Depends(require("operator")), db=Depends(get_db)):
-    before = object_dict(row_or_404(db, "SELECT * FROM map_object WHERE id = ?", (object_id,)))
     with tx(db):
+        before = object_dict(row_or_404(db, "SELECT * FROM map_object WHERE id = ?", (object_id,)))
         _save_object(db, body, object_id)
         after = body.model_dump()
         diff = {k: [before.get(k), v] for k, v in after.items() if before.get(k) != v}
         audit(db, user, "update", "map_object", object_id, diff)
+        result = get_object(object_id, user, db)
     DataVersion.bump()
-    return get_object(object_id, user, db)
+    return result
 
 
 @app.delete("/api/objects/{object_id}")
 def delete_object(object_id: int, user=Depends(require("operator")), db=Depends(get_db)):
-    before = object_dict(row_or_404(db, "SELECT * FROM map_object WHERE id = ?", (object_id,)))
     with tx(db):
+        before = object_dict(row_or_404(db, "SELECT * FROM map_object WHERE id = ?", (object_id,)))
         db.execute("DELETE FROM object_comment WHERE object_id = ?", (object_id,))
         db.execute("DELETE FROM map_object WHERE id = ?", (object_id,))
         audit(db, user, "delete", "map_object", object_id, before)
@@ -893,13 +895,22 @@ def import_template(user=Depends(require("operator")), db=Depends(get_db)):
 @app.get("/api/import")
 def import_history(user=Depends(require("operator")), db=Depends(get_db)):
     rows = db.execute(
-        "SELECT * FROM import_batch WHERE status IN ('committed', 'rolled_back') ORDER BY id DESC LIMIT 200"
+        "SELECT id, file_name, stored_file, source, user_id, user_login, created_at, mode, status, sheet, mapping, "
+        "added, updated, deleted, errors, committed_at, rolled_back_at, "
+        "rollback_baseline IS NOT NULL AS has_rollback_baseline FROM import_batch "
+        "WHERE status IN ('committed', 'rolled_back') ORDER BY id DESC LIMIT 200"
     ).fetchall()
     latest = db.execute("SELECT MAX(id) FROM import_batch WHERE status = 'committed'").fetchone()[0]
     out = []
     for r in rows:
         d = batch_dict(r)
-        d["can_rollback"] = d["id"] == latest
+        # Availability is a hint. Full baseline validation belongs under the rollback write lock.
+        has_baseline = d.pop("has_rollback_baseline")
+        d["can_rollback"] = d["status"] == "committed" and d["id"] == latest and bool(has_baseline)
+        d["rollback_unavailable_reason"] = (
+            "У импорта нет контрольной версии; автоматический откат недоступен"
+            if d["status"] == "committed" and not has_baseline else None
+        )
         out.append(d)
     return out
 
@@ -968,12 +979,13 @@ def _validate_batch(db, b: dict, body: PreviewIn):
 @app.post("/api/import/{import_id}/preview")
 def import_preview(import_id: int, body: PreviewIn, user=Depends(require("operator")), db=Depends(get_db)):
     """Шаг 2: проверка строк и предпросмотр. В базу объектов ничего не пишется."""
-    b = _pending_batch(db, import_id)
-    _, result = _validate_batch(db, b, body)
-    db.execute(
-        "UPDATE import_batch SET status='checked', sheet=?, mapping=?, mode=?, source=? WHERE id=?",
-        (body.sheet, json.dumps(body.mapping, ensure_ascii=False), body.mode, body.source.strip(), import_id),
-    )
+    with tx(db):
+        b = _pending_batch(db, import_id)
+        _, result = _validate_batch(db, b, body)
+        db.execute(
+            "UPDATE import_batch SET status='checked', sheet=?, mapping=?, mode=?, source=? WHERE id=?",
+            (body.sheet, json.dumps(body.mapping, ensure_ascii=False), body.mode, body.source.strip(), import_id),
+        )
     return importer.preview_payload(result)
 
 
@@ -987,18 +999,19 @@ def import_commit(import_id: int, user=Depends(require("operator")), db=Depends(
     _, result = _validate_batch(db, b, body)
     if result["counts"]["create"] + result["counts"]["update"] + result["counts"]["delete"] == 0:
         raise HTTPException(422, "Нет строк для загрузки — исправьте ошибки в файле")
-    return importer.commit(db, b, result, user)
+    try:
+        return importer.commit(db, b, result, user)
+    except rollback_guard.RollbackConflict as e:
+        raise HTTPException(409, e.detail) from e
 
 
 @app.post("/api/import/{import_id}/rollback")
 def import_rollback(import_id: int, user=Depends(require("operator")), db=Depends(get_db)):
     b = dict(row_or_404(db, "SELECT * FROM import_batch WHERE id = ?", (import_id,), "Импорт"))
-    if b["status"] != "committed":
-        raise HTTPException(409, "Откатить можно только выполненный импорт")
-    latest = db.execute("SELECT MAX(id) FROM import_batch WHERE status = 'committed'").fetchone()[0]
-    if latest != import_id:
-        raise HTTPException(409, "Откатывать импорты можно только по порядку, начиная с последнего")
-    return importer.rollback(db, b, user)
+    try:
+        return importer.rollback(db, b, user)
+    except rollback_guard.RollbackConflict as e:
+        raise HTTPException(409, e.detail) from e
 
 
 @app.get("/api/import/{import_id}/errors")
